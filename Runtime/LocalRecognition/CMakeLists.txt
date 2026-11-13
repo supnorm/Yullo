@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.20)
+project(YulloLocalRecognition LANGUAGES C CXX)
+if(NOT YULLO_WHISPER_SOURCE)
+    message(FATAL_ERROR "A pinned whisper.cpp source directory is required")
+endif()
+add_subdirectory("${YULLO_WHISPER_SOURCE}" whisper-build EXCLUDE_FROM_ALL)
+add_executable(yullo-whisper yullo-whisper.cpp)
+target_compile_features(yullo-whisper PRIVATE cxx_std_17)
+target_include_directories(yullo-whisper PRIVATE "${YULLO_WHISPER_SOURCE}/examples")
+target_compile_definitions(yullo-whisper PRIVATE
+    YULLO_WHISPER_CLI_SOURCE="${YULLO_WHISPER_SOURCE}/examples/cli/cli.cpp")
+target_link_libraries(yullo-whisper PRIVATE common whisper ${CMAKE_THREAD_LIBS_INIT})

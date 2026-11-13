@@ -1,0 +1,15 @@
+{
+  "description": "Yullo sample voice generated from the Kokoro preset af_heart. No human recording.",
+  "text": "A clear voice makes every word easy to follow. Take a moment, and listen at a comfortable pace.",
+  "modelSource": "https://huggingface.co/hexgrad/Kokoro-82M",
+  "modelLicense": "Apache-2.0",
+  "modelFile": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+  "modelRevision": "ef1ab2598f6d4d101486e4c5b9e605c687f20642",
+  "modelSHA256": "9a4ca6176460cdc8c7845b804c0bbe85a4791ee3ffff568a3fdadbb708c63f47",
+  "runtimeSource": "https://github.com/0xShug0/audio.cpp",
+  "runtimeRevision": "dd92e32b6e268178ff43f4fa3ca36f0b380491e0",
+  "voice": "af_heart",
+  "speed": 1,
+  "audioSHA256": "c39dc94d352fd4e8588660f06746fcdfd53658cf39fa5e02ff03319e1f5fc476",
+  "audioBytes": 303644
+}

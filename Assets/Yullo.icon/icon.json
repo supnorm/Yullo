@@ -1,0 +1,41 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:0.14117647,0.28235294,0.84705882,1.00000000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.07843137,0.10196078,0.16862745,1.00000000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Glyph.svg",
+          "name": "Yullo",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "blur-material": null
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

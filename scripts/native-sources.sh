@@ -1,0 +1,25 @@
+# Explicit production sources shared by release and isolated native checks.
+# Test sources are never part of this list.
+source scripts/core-sources.sh
+source scripts/source-snapshot.sh
+YULLO_SOURCES=(
+  "${YULLO_TRANSLATION_CORE_SOURCES[@]}" "${YULLO_APP_API_SOURCES[@]}"
+  App/Services/Connectivity.swift App/Services/CredentialAccess.swift App/Services/CredentialAccessView.swift
+  App/Application/Localization.swift App/Language/Language.swift App/Language/LanguageBrowser.swift App/Language/SelectionLanguagePolicy.swift App/Application/WindowPlacement.swift App/Application/WindowSession.swift
+  App/ReadAloud/LocalSpeechVoiceCatalog.swift App/Application/ProcessingPolicy.swift App/Application/Preferences.swift App/Application/LaunchAtLogin.swift App/Application/BrandArtwork.swift App/Application/Theme.swift App/Application/NativeScrolling.swift App/Voice/VoiceCatalog.swift App/Application/Shortcuts.swift
+  App/Language/InputLanguageAnalysis.swift App/Language/SpokenLanguageDetection.swift App/Translation/TranslationModel.swift App/Application/NativeApp.swift App/Application/SystemPromptReturn.swift App/Settings/PermissionSettings.swift App/Settings/PermissionSettingsView.swift App/Application/AppModalPolicy.swift App/Application/AppMenuPolicy.swift App/Application/TerminationSignal.swift App/Settings/SettingsSearch.swift App/Services/API.swift App/Translation/TranslationPrompt.swift App/ReadAloud/Speech.swift
+  App/Services/CLISubprocess.swift App/Services/CLIClient.swift App/Translation/LocalTranslationProvider.swift App/Translation/LongTranslationOperation.swift App/Translation/TranslationService.swift App/Translation/RefinementService.swift App/Translation/WritingStylePresentation.swift App/Voice/VoiceEditService.swift App/Translation/WritingReview.swift App/Translation/Routing.swift App/Translation/AppleTranslation.swift
+  App/Settings/Settings.swift App/Settings/SettingsWindowSurface.swift App/Settings/SettingsCommitCoordinator.swift App/Settings/SettingsVisibility.swift App/Settings/ActivityStatus.swift App/Services/ServiceReadiness.swift App/Onboarding/WelcomeStartup.swift App/Onboarding/WelcomeView.swift App/Onboarding/GuidedSetup.swift App/Onboarding/GuidedSetupView.swift App/Onboarding/GuidedTour.swift App/Onboarding/SetupCelebration.swift App/Settings/PersonalVocabularySettingsView.swift App/Onboarding/MailApplication.swift App/About/AboutView.swift App/About/StarAsk.swift App/About/ReleaseNotes.swift App/About/AppUpdates.swift App/Onboarding/CLISetupGuideView.swift App/About/OpenSourceLicenses.swift App/Translation/TextMutationRange.swift App/Selection/SelectionReader.swift App/Selection/SelectionReplacement.swift App/Selection/RefineInPlace.swift App/Selection/SelectionVoiceEdit.swift App/Selection/SelectionVoiceEditReview.swift App/Translation/TranslationOutputViewport.swift App/Translation/PanelSurface.swift App/Translation/TranslatorViews.swift
+  App/Voice/AudioCapture.swift App/Voice/RecordingSilenceMonitor.swift App/Models/ModelLibrary.swift App/Models/LocalModelCatalog.swift App/Models/ModelDownload.swift App/Models/VoiceModelStore.swift App/Voice/LocalTranscriber.swift
+  App/Voice/AppleSpeechTranscriber.swift App/Voice/VoiceRecognitionService.swift App/Voice/RecognitionRecovery.swift App/Voice/LiveRecognition.swift App/Voice/LocalLiveRecognition.swift App/Voice/AppleLiveRecognition.swift
+  App/Selection/TextDelivery.swift App/Selection/BrowserAddress.swift App/Selection/SourceDictationTarget.swift App/Voice/VoiceRecordingOverlay.swift App/Voice/OutputPresentation.swift App/Voice/VoiceFormatMenu.swift App/Voice/RecordingKeyMonitor.swift App/Voice/VoiceInputCoordinator.swift App/Voice/VoiceResultComparison.swift App/Voice/VoiceTrial.swift App/Voice/VoiceSettings.swift App/Settings/YourFormats.swift App/Settings/OutputSettingsViews.swift App/Settings/OutputSuggestions.swift App/Settings/OllamaSettingsView.swift App/Services/AppleWriter.swift App/Settings/PresetDescribing.swift App/Voice/ScenarioPanel.swift
+  App/Models/ModelDiscoveryCatalog.swift App/Models/ModelCatalogView.swift App/Models/HardwareModelRecommendation.swift App/Onboarding/QuickSetup.swift App/Onboarding/QuickSetupView.swift App/Voice/RecentVoiceResultStore.swift App/History/ResultHistoryStore.swift App/History/ResultHistoryView.swift App/Translation/AppleTranslationAssets.swift App/Translation/AppleTranslationAssetsView.swift
+  App/ReadAloud/LocalSpeechSynthesizer.swift App/ReadAloud/CloudSpeechProviders.swift App/ReadAloud/SpeechAPI.swift App/ReadAloud/CloudSpeechSettingsView.swift App/ReadAloud/LocalVoiceSettingsView.swift App/Language/SpeechLanguagePolicy.swift
+)
+# Built into the app only: they need the embedded Sparkle framework.
+YULLO_APP_ONLY_SOURCES=(App/About/SparkleUpdates.swift)
+YULLO_FRAMEWORKS=(
+  -framework SwiftUI -framework AppKit -framework Translation -framework NaturalLanguage
+  -framework AVFoundation -framework Carbon -framework ApplicationServices -framework ServiceManagement
+  -framework SoundAnalysis -framework CoreMedia -framework Speech
+)

@@ -1,0 +1,18 @@
+Yullo
+Copyright 2026 The Yullo authors
+https://yullo.me · hi@yullo.me
+
+Licensed under the Apache License, Version 2.0 (see LICENSE). The license
+does not grant permission to use the Yullo name, logo or app icon, except as
+needed to describe the origin of the work.
+
+Third-party components keep their own licenses. The IBM Plex Mono font is
+under the SIL Open Font License (Assets/Fonts/LICENSE-IBMPlexMono.txt). In-app
+updates use the Sparkle framework (MIT License), which the build fetches from
+its official release and embeds unchanged. The bundled runtimes' notices ship in the app under Contents/Resources/ThirdParty
+and appear in About > Open-source licenses. The separate local speech helper
+includes eSpeak-ng and is distributed under GPL-3.0-or-later; its complete
+corresponding source is provided beside each release.
+
+Speech, translation and voice models are not part of this source. Yullo
+downloads them from their publishers, and each is governed by its own terms.

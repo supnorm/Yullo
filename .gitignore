@@ -1,0 +1,17 @@
+/build/
+/.runtime-build/
+/.runtime-source/
+__pycache__/
+signing-identity.txt
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.env
+.env.*
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+/scratch/
+*.log
