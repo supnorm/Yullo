@@ -443,21 +443,36 @@ struct ModelRatingView: View {
             .accessibilityElement(children: .contain)
             .help(L10n.tr("Ratings come from published benchmarks and compare models for the same task."))
     }
-    static func circleSymbols(_ value: Double) -> [String] {
+    // 1 full, 0.5 half, 0 empty for each of the five circles.
+    static func circleFills(_ value: Double) -> [Double] {
         (0..<5).map { index in
             let fill = value - Double(index)
-            // circle.lefthalf.filled fills its left half, so the meter fills
-            // left to right like the full circles before it.
-            return fill >= 1 ? "circle.fill" : fill >= 0.5 ? "circle.lefthalf.filled" : "circle"
+            return fill >= 1 ? 1 : fill >= 0.5 ? 0.5 : 0
         }
+    }
+    // Drawn here rather than taken from SF Symbols: circle.lefthalf.filled puts
+    // its ink on the right in some rendering paths and system releases, while
+    // the meter must fill from the left like the full circles before it.
+    static func circleImage(_ fill: Double) -> Image {
+        Image(size: CGSize(width: 10, height: 9)) { context in
+            let bounds = CGRect(x: 1, y: 0.5, width: 8, height: 8), line: CGFloat = 0.75
+            guard fill < 1 else { return context.fill(Path(ellipseIn: bounds), with: .color(.black)) }
+            context.stroke(
+                Path(ellipseIn: bounds.insetBy(dx: line / 2, dy: line / 2)), with: .color(.black), lineWidth: line)
+            guard fill >= 0.5 else { return }
+            var half = Path()
+            half.addArc(
+                center: CGPoint(x: bounds.midX, y: bounds.midY), radius: bounds.width / 2,
+                startAngle: .degrees(90), endAngle: .degrees(270), clockwise: false)
+            half.closeSubpath()
+            context.fill(half, with: .color(.black))
+        }.renderingMode(.template)
     }
     private func meter(_ key: String, spoken: String, value: Double) -> some View {
         let score = value.formatted(.number.precision(.fractionLength(1)).locale(L10n.locale))
         // The localized label keeps its own order around the circles.
         let parts = L10n.format(key, "\u{FFFC}").components(separatedBy: "\u{FFFC}")
-        let circles = Self.circleSymbols(value).map {
-            Text(Image(systemName: $0)).font(.system(size: 8)).baselineOffset(1)
-        }
+        let circles = Self.circleFills(value).map { Text(Self.circleImage($0)) }
         let prefix = Text(verbatim: parts.first ?? ""), suffix = Text(verbatim: parts.dropFirst().joined())
         return Text("\(prefix)\(circles[0])\(circles[1])\(circles[2])\(circles[3])\(circles[4])\(suffix)")
             .accessibilityLabel(L10n.format(spoken, score))

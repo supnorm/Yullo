@@ -8,11 +8,14 @@ import Combine
     var keep: (UUID) -> Void = { _ in }
     // Whether a lease can still be written after an attempt that failed.
     var holds: (UUID) async -> Bool = { _ in false }
+    // The system route also says when the backup writer made the edit instead of Apple's model.
+    var editNoted: ((String, String, TranslationSettings) async throws -> (text: String, note: String?))? = nil
     static var system: Self {
         .init(
             edit: { try await VoiceEditService.shared.edit(source: $0, instruction: $1, settings: $2) },
             replace: { try await SelectionReplacement.replace(token: $0, with: $1) },
-            keep: { SelectionReplacement.renew($0) }, holds: { await SelectionReplacement.holds($0) })
+            keep: { SelectionReplacement.renew($0) }, holds: { await SelectionReplacement.holds($0) },
+            editNoted: { try await VoiceEditService.shared.editNoted(source: $0, instruction: $1, settings: $2) })
     }
 }
 
@@ -20,10 +23,12 @@ import Combine
 // enters a model request, and a reviewed result never writes automatically.
 @MainActor final class SelectionVoiceEdit: ObservableObject {
     enum Phase: Equatable { case idle, instruction, processing, review, replacing, finished, error }
-    enum Recovery {
+    enum Recovery: Equatable {
         case none, recordInstruction, retry, credentials, processing, service, vocabulary, permissions
         // No writer is set up: one is chosen, then the same request runs.
         case writingService
+        // Fixed where they are: start Ollama, or sign in to a command-line tool.
+        case openOllama, signIn(CLIProvider)
     }
     @Published private(set) var phase = Phase.idle
     @Published private(set) var source = ""
@@ -45,6 +50,8 @@ import Combine
     // Replace writes somewhere of its own (the guide's Sample card), not into a selection:
     // notes about the selection or the app in front don't apply.
     private(set) var ownTarget = false
+    // The app the selection came from, named when its text can't be written.
+    private var sourceApp: String?
     private var operation: Task<Void, Never>?
     private var delivery = RecentVoiceResultStore.DeliveryOutcome.notInserted
     private var replacementAttempt: UUID?
@@ -71,7 +78,7 @@ import Combine
     var deliveryOutcome: RecentVoiceResultStore.DeliveryOutcome { delivery }
     func prepare(
         source: String, token: UUID?, settings: TranslationSettings, sourceIsCurrent: @escaping () -> Bool,
-        ownTarget: Bool = false
+        ownTarget: Bool = false, sourceApp: String? = nil
     ) throws -> UUID {
         guard
             source.utf8.prefix(CoreVoiceEditPrompt.maximumSourceBytes + 1).count
@@ -88,6 +95,7 @@ import Combine
         self.settings = settings
         self.sourceIsCurrent = sourceIsCurrent
         self.ownTarget = ownTarget
+        self.sourceApp = sourceApp
         phase = .instruction
         // Apple's model loads while the request is still being spoken.
         if settings.engine == "apple" { AppleWriterWarmSession.shared.prewarm(CoreVoiceEditPrompt.localInstruction) }
@@ -140,7 +148,12 @@ import Combine
         let source = base ?? (refining ? previous.result : source), backend = backend
         operation = Task { @MainActor [weak self] in
             do {
-                let output = try await backend.edit(source, text, settings)
+                let output: String, standIn: String?
+                if let editNoted = backend.editNoted {
+                    (output, standIn) = try await editNoted(source, text, settings)
+                } else {
+                    (output, standIn) = (try await backend.edit(source, text, settings), nil)
+                }
                 try Task.checkCancellation()
                 try CoreVoiceEditPrompt.validateResult(source: source, instruction: text, result: output)
                 let review = try await WritingReview.inspect(
@@ -157,7 +170,7 @@ import Combine
                 if refining { self.earlier.append(previous) }
                 self.instruction = text
                 self.result = output
-                self.message = review.notice ?? ""
+                self.message = [standIn, review.notice].compactMap { $0 }.joined(separator: "\n")
                 // A request that changed nothing says so instead of offering a replace.
                 if TextMutationRange.identical(source, output) {
                     self.message = [L10n.tr("Nothing changed."), self.message].filter { !$0.isEmpty }
@@ -171,7 +184,7 @@ import Combine
                     ]
                     .filter { !$0.isEmpty }.joined(separator: "\n")
                 } else if self.token == nil {
-                    let issue = self.spent ?? L10n.tr("Can’t replace text in this app.")
+                    let issue = self.spent ?? Self.cannotReplace(in: self.sourceApp)
                     self.message = [self.message, issue].filter { !$0.isEmpty }.joined(separator: "\n")
                 }
                 self.didAcceptResult?(expected, self.source, output, self.delivery)
@@ -392,7 +405,7 @@ import Combine
             recovery = .retry
         } else if phase == .review {
             recovery = .none
-            if !ownTarget { message = L10n.tr("Can’t replace text in this app.") }
+            if !ownTarget { message = Self.cannotReplace(in: sourceApp) }
         }
         changed()
     }
@@ -438,7 +451,8 @@ import Combine
         // edit can be said another way.
         if let issue = error as? OllamaIssue {
             switch issue {
-            case .notInstalled, .notRunning, .noModel, .modelMissing: return .service
+            case .notRunning: return .openOllama
+            case .notInstalled, .noModel, .modelMissing: return .service
             default: return .retry
             }
         }
@@ -452,9 +466,22 @@ import Combine
         }
         if let issue = error as? APIError {
             switch issue {
-            case .keychain: return .credentials
+            case .keychain where issue.needsKeyPermission: return .credentials
+            case .keychain where issue.isKeychainBusy: return .retry
+            case .keychain: return .service
             case .invalidEndpoint, .missingModel, .http(401), .http(403), .http(404): return .service
             case .refused: return .recordInstruction
+            default: return .retry
+            }
+        }
+        if let issue = error as? CLIError {
+            switch issue {
+            case .signedOut(let provider): return .signIn(provider)
+            case .codexSignInFileMissing: return .signIn(.codex)
+            case .invalidExecutable, .unavailable, .unsupportedVersion, .invalidModel, .missingModel,
+                .modelUnavailable:
+                return .service
+            case .usageLimit: return .writingService
             default: return .retry
             }
         }
@@ -477,6 +504,13 @@ import Combine
         }
     }
     // After an attempt that wrote nothing and can run again.
+    // No dead end: what to do instead, with the app named when it is known.
+    static func cannotReplace(in app: String?) -> String {
+        app.map {
+            L10n.format("%@ doesn’t let Yullo edit this text. Paste the result there with ⌘V.", $0)
+        }
+            ?? L10n.tr("This app doesn’t let Yullo edit this text. Paste the result there with ⌘V.")
+    }
     private static func retryMessage(_ issue: SelectionReplacement.Issue?) -> String? {
         switch issue {
         case .focusUnavailable: return L10n.tr("The app didn’t respond, so nothing was replaced.")
@@ -490,16 +524,20 @@ import Combine
     ) -> String {
         if outcome == .uncertain { return L10n.tr("Check the original app before inserting again.") }
         switch issue {
-        case .permission: return L10n.tr("Allow Accessibility access, then select the text again.")
-        case .unsupported: return L10n.tr("Can’t replace text in this app.")
+        case .permission:
+            return AccessibilityGrant.current().message
+                ?? L10n.tr("Allow Accessibility access, then select the text again.")
+        case .unsupported: return cannotReplace(in: nil)
         case .staleSelection: return L10n.tr("The selected text changed, so it can’t be replaced.")
         default: return L10n.tr("Couldn’t access the original selection. Select it again.")
         }
     }
     private static func replacementMessage(_ issue: SelectionReplacement.Issue?) -> String {
         switch issue {
-        case .permission: return L10n.tr("Allow Accessibility access, then select the text again.")
-        case .unsupported: return L10n.tr("Can’t replace text in this app.")
+        case .permission:
+            return AccessibilityGrant.current().message
+                ?? L10n.tr("Allow Accessibility access, then select the text again.")
+        case .unsupported: return cannotReplace(in: nil)
         case .focusUnavailable: return L10n.tr("Couldn’t access the original selection. Select it again.")
         case .staleSelection: return L10n.tr("The selected text changed, so it can’t be replaced.")
         case .failed, .notAnswering: return L10n.tr("Couldn’t replace the selection.")

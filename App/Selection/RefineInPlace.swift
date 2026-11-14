@@ -14,6 +14,8 @@ import SwiftUI
     #if YULLO_TESTING
         var testCapture: ((Int32?) async -> SelectionReader.Outcome)?
         var testRewrite: ((String) async throws -> String)?
+        var testRewriteNote: String?
+        var testReplace: ((UUID, String) async throws -> Void)?
         var testChip: RefineChip { chip }
     #endif
     var openInYullo: ((String) -> Void)?
@@ -180,16 +182,17 @@ import SwiftUI
             actionHelp: editKeyLabel.map { L10n.tr("Cancel") + " · " + $0 })
         let settings = TranslationSettings(preferences, engine: preferences.voiceRefinementEngine)
         let result: String
+        var standIn: String?
         do {
             #if YULLO_TESTING
                 if let testEdit {
                     result = try await testEdit(original, instruction)
                 } else {
-                    result = try await VoiceEditService.shared.edit(
+                    (result, standIn) = try await VoiceEditService.shared.editNoted(
                         source: original, instruction: instruction, settings: settings)
                 }
             #else
-                result = try await VoiceEditService.shared.edit(
+                (result, standIn) = try await VoiceEditService.shared.editNoted(
                     source: original, instruction: instruction, settings: settings)
             #endif
             try CoreVoiceEditPrompt.validateResult(source: original, instruction: instruction, result: result)
@@ -206,14 +209,15 @@ import SwiftUI
         }
         guard let token = selection.replacementToken else {
             Self.copy(result)
-            chip.show(L10n.tr("Can’t edit here. Result copied."), near: bounds, for: 5, status: .done)
+            chip.show(Self.cannotEdit(in: sourcePID), near: bounds, for: 6, status: .done)
             return
         }
         do {
-            _ = try await SelectionReplacement.replace(token: token, with: result)
+            try await replaceSelection(token, with: result)
             written = true
             chip.show(
-                L10n.tr("Edited · ⌘Z to undo"), near: bounds, for: 3, status: .done,
+                standIn ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Edited · ⌘Z to undo"), near: bounds,
+                for: standIn == nil ? 3 : 5, status: .done,
                 action: (L10n.tr("Open in Yullo"), { [weak self] in self?.openReview?(original, instruction, result) }))
         } catch SelectionReplacement.Issue.uncertain {
             written = true
@@ -235,6 +239,18 @@ import SwiftUI
     }
 
     private static func copy(_ text: String) { DeliveryFallback.copy(text) }
+    private func replaceSelection(_ token: UUID, with text: String) async throws {
+        #if YULLO_TESTING
+            if let testReplace { return try await testReplace(token, text) }
+        #endif
+        _ = try await SelectionReplacement.replace(token: token, with: text)
+    }
+    // Read-only text, or an app that takes no edits: the result is on the clipboard.
+    static func cannotEdit(in processID: Int32?) -> String {
+        processID.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName }.map {
+            L10n.format("%@ doesn’t let Yullo edit this text. Result copied: paste it with ⌘V.", $0)
+        } ?? L10n.tr("Can’t edit here. Result copied: paste it with ⌘V.")
+    }
 
     static func editMessage(for error: Error) -> String {
         if let reason = error as? CoreVoiceEditValidationError {
@@ -257,7 +273,15 @@ import SwiftUI
         switch outcome {
         case .selection: return
         case .empty: chip.show(L10n.tr("Select text first."), near: bounds, for: 1.5)
-        case .unreadable: chip.show(L10n.tr("Couldn’t read the selection."), near: bounds, for: 2.5)
+        case .unreadable:
+            // Every read refused is Yullo's permission, not the app: say how to fix it.
+            if let message = AccessibilityGrant.checked("read-selection").message {
+                chip.show(
+                    message, near: bounds, for: 10,
+                    action: (L10n.tr("Open Accessibility Settings"), { AccessibilityGrant.openSettings() }))
+            } else {
+                chip.show(L10n.tr("Couldn’t read the selection."), near: bounds, for: 2.5)
+            }
         }
     }
 
@@ -290,14 +314,15 @@ import SwiftUI
         }
         defer { working.cancel() }
         let result: String
+        let note: String?
         do {
             // Cancelling this run also stops the pending working chip, which
             // would otherwise replace "Nothing changed." and never time out.
-            result = try await withTaskCancellationHandler {
+            (result, note) = try await withTaskCancellationHandler {
                 #if YULLO_TESTING
-                    if let testRewrite { return try await testRewrite(selection.text) }
+                    if let testRewrite { return (try await testRewrite(selection.text), testRewriteNote) }
                 #endif
-                return try await Self.rewrite(selection.text, plan: plan, preferences: preferences)
+                return try await Self.rewriteNoted(selection.text, plan: plan, preferences: preferences)
             } onCancel: {
                 working.cancel()
             }
@@ -323,14 +348,16 @@ import SwiftUI
         }
         guard let token = selection.replacementToken else {
             // Read-only text (a web page or PDF).
-            copied(L10n.tr("Can’t edit here. Result copied."))
+            copied(Self.cannotEdit(in: sourcePID))
             return
         }
         do {
-            _ = try await SelectionReplacement.replace(token: token, with: result)
+            try await replaceSelection(token, with: result)
             let original = selection.text
+            // A stand-in's result says which one wrote it, for as long as a message stays.
             chip.show(
-                L10n.tr("Refined · ⌘Z to undo"), near: bounds, for: 3, status: .done,
+                note ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Refined · ⌘Z to undo"), near: bounds,
+                for: note == nil ? 3 : 5, status: .done,
                 action: (L10n.tr("Open in Yullo"), { [weak self] in self?.openInYullo?(original) }))
         } catch SelectionReplacement.Issue.staleSelection {
             copied(L10n.tr("Selection changed. Result copied."))
@@ -342,15 +369,22 @@ import SwiftUI
     }
 
     static func rewrite(_ text: String, plan: CoreOutputPlan, preferences: Preferences) async throws -> String {
+        try await rewriteNoted(text, plan: plan, preferences: preferences).text
+    }
+    // The rewrite, and when a stand-in produced it (Apple's translation, the backup writer), the words that say so.
+    static func rewriteNoted(_ text: String, plan: CoreOutputPlan, preferences: Preferences) async throws
+        -> (text: String, note: String?)
+    {
         switch plan.task {
         case .asSpoken:
-            return text
+            return (text, nil)
         case .translate(let target):
             var settings = TranslationSettings(preferences)
             settings.presetInstructions = plan.instructions
             let result = try await TranslationService.shared.translate(
                 text: text, source: "auto", target: target, settings: settings)
-            return try result.finished()
+            let standIn = result.usedAnyApple && settings.engine != "apple"
+            return (try result.finished(), standIn ? result.appleFallbackNotice : nil)
         case .write(let style, let language):
             var settings = TranslationSettings(preferences, engine: preferences.voiceRefinementEngine)
             settings.presetInstructions = plan.instructions
@@ -359,7 +393,7 @@ import SwiftUI
                 let name = Language.catalog.first(where: { $0.id == language })?.subtitle ?? language
                 settings.writingRequirements = settings.writingRequirements.writing(in: name)
             }
-            return try await RefinementService.shared.refine(text: text, style: style, settings: settings)
+            return try await RefinementService.shared.refineNoted(text: text, style: style, settings: settings)
         }
     }
 

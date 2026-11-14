@@ -32,6 +32,7 @@ enum OllamaSuggestion {
         }
     }
     static let library = URL(string: "https://ollama.com/search")!
+    static let serveCommand = "ollama serve"
 }
 
 struct OllamaSettingsView: View {
@@ -46,6 +47,10 @@ struct OllamaSettingsView: View {
     // Opened from a task page's Set up…: the editor is already open.
     var startsEditing = false
     @State private var refreshCount = 0
+    // Ollama as this Mac has it; checks pass their own.
+    var probe: @Sendable (String) async -> OllamaClient.Status = { await OllamaClient.shared.status(host: $0) }
+    var hasApp = OllamaClient.hasApp
+    @State private var copied = false
     private let suggestion = OllamaSuggestion.model()
 
     private var installedNames: [String] {
@@ -72,7 +77,8 @@ struct OllamaSettingsView: View {
                     Text(issue).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(
                         horizontal: false, vertical: true)
                 }
-                if !installedNames.isEmpty || !model.isEmpty {
+                // A model can be chosen once Ollama runs; the address stays for a remote host.
+                if case .running = status, !installedNames.isEmpty || !model.isEmpty {
                     SettingsTaskRow(title: L10n.tr("Model")) {
                         Picker(L10n.tr("Model"), selection: $model) {
                             if model.isEmpty { Text(L10n.tr("Choose a model")).tag("") }
@@ -96,7 +102,7 @@ struct OllamaSettingsView: View {
             }
             .task(id: host + "|\(refreshCount)") {
                 let current = host
-                let value = await OllamaClient.shared.status(host: current)
+                let value = await probe(current)
                 guard !Task.isCancelled, current == host else { return }
                 status = value
             }
@@ -121,12 +127,37 @@ struct OllamaSettingsView: View {
     @ViewBuilder private var statusStep: some View {
         switch status {
         case .notInstalled:
-            SettingsTaskRow(title: L10n.tr("Not installed")) {
+            // The row says what Ollama is for; the caption above already says it isn't installed.
+            SettingsTaskRow(title: L10n.tr("Runs models on this Mac")) {
                 Button(L10n.tr("Get Ollama…")) { NSWorkspace.shared.open(OllamaSuggestion.website) }
             }
         case .notRunning:
-            SettingsTaskRow(title: L10n.tr("Not running")) {
-                Button(L10n.tr("Open Ollama"), action: openOllama)
+            if hasApp {
+                SettingsTaskRow(title: L10n.tr("Not running")) {
+                    Button(L10n.tr("Open Ollama"), action: openOllama)
+                }
+            } else {
+                // Installed as a command (Homebrew, the install script): it starts in Terminal,
+                // and the status follows when Yullo comes back.
+                SettingsTaskRow(title: L10n.tr("Start in Terminal")) {
+                    Text(OllamaSuggestion.serveCommand).font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button {
+                        WritingServiceSetupEffects.live.copy(OllamaSuggestion.serveCommand)
+                        copied = true
+                    } label: {
+                        if copied {
+                            Label(L10n.tr("Copied"), systemImage: "checkmark")
+                        } else {
+                            Text(L10n.tr("Copy command"))
+                        }
+                    }.accessibilityIdentifier("ollama-copy-serve")
+                        .task(id: copied) {
+                            guard copied else { return }
+                            try? await Task.sleep(for: .seconds(1.5))
+                            copied = false
+                        }
+                }
             }
         case .running(let models) where models.isEmpty:
             SettingsTaskRow(title: L10n.format("Suggested for this Mac: %@ · %@", suggestion.name, suggestion.size)) {

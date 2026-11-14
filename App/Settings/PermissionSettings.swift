@@ -10,7 +10,11 @@ enum MicrophonePermission: Equatable {
 
 struct VoicePermissionStatus: Equatable {
     let microphone: MicrophonePermission
+    // Accessibility works now: trusted, and macOS lets Yullo read other apps.
     let accessibility: Bool
+    // The live state behind it, from AccessibilityGrant; checks may leave it out.
+    var accessibilityGrant: AccessibilityGrant? = nil
+    var accessibilityState: AccessibilityGrant { accessibilityGrant ?? (accessibility ? .granted : .missing) }
 }
 
 @MainActor
@@ -34,27 +38,23 @@ struct PermissionSettingsBackend {
             case .restricted: microphone = .restricted
             @unknown default: microphone = .restricted
             }
-            return .init(microphone: microphone, accessibility: AXIsProcessTrusted())
+            // The same live check the selection features use.
+            let grant = AccessibilityGrant.current()
+            return .init(microphone: microphone, accessibility: grant == .granted, accessibilityGrant: grant)
         },
         requestMicrophone: {
             await withCheckedContinuation { continuation in
                 AVCaptureDevice.requestAccess(for: .audio) { _ in continuation.resume() }
             }
         },
-        requestAccessibility: {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-        },
+        // AccessibilityGrant.openSettings asks and opens the pane in one step.
+        requestAccessibility: {},
         openMicrophoneSettings: {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
                 NSWorkspace.shared.open(url)
             }
         },
-        openAccessibilitySettings: {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-        },
+        openAccessibilitySettings: { AccessibilityGrant.openSettings() },
         returnToApp: { NSApp.activate(ignoringOtherApps: true) })
 }
 
@@ -62,6 +62,8 @@ struct PermissionSettingsBackend {
 final class PermissionSettingsController: ObservableObject {
     @Published private(set) var status: VoicePermissionStatus?
     @Published private(set) var isRequestingMicrophone = false
+    // Enable… was pressed in this visit: a row still off then names the remove-and-add step.
+    @Published private(set) var askedAccessibility = false
     private let backend: PermissionSettingsBackend
     private var request: Task<Void, Never>?
     private var revision = UUID()
@@ -115,6 +117,7 @@ final class PermissionSettingsController: ObservableObject {
         guard isPresented, !isRequestingMicrophone else { return }
         let current = backend.status()
         status = current
+        askedAccessibility = true
         if !current.accessibility { backend.requestAccessibility() }
         backend.openAccessibilitySettings()
         refresh()

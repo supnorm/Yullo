@@ -10,6 +10,9 @@ enum SelectionReader {
         var replacementToken: UUID? = nil
         // The selection's last character on screen, where a result is shown near.
         var endBounds: CGRect? = nil
+        // The token pastes over a page selection rather than writing the field:
+        // what lands can't be read back, so success says Pasted.
+        var pastes = false
     }
     // What a selection shortcut found: text, a focused field with nothing selected,
     // or nothing Yullo could read (no Accessibility text, a protected field, an error).

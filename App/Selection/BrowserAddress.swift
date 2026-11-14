@@ -10,18 +10,13 @@ import ApplicationServices
 // deadline, so a busy or hung browser never holds up the recording.
 @MainActor enum BrowserAddress {
     static let budget: TimeInterval = 0.15
-    // Browsers already asked to build their page tree, by process; asked once.
-    private static var manualAccessibility: Set<pid_t> = []
 
     static func host(pid: pid_t, bundleID: String?) -> String? {
         guard let bundleID, CoreWebsite.isBrowser(bundleID), AXIsProcessTrusted() else { return nil }
         let deadline = ProcessInfo.processInfo.systemUptime + budget
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, Float(budget))
-        // Chromium builds its page tree for assistive apps only when asked, as VoiceOver does.
-        if CoreWebsite.chromiumBundleIDs.contains(bundleID.lowercased()), manualAccessibility.insert(pid).inserted {
-            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        }
+        AccessibilityTreeWake.prepare(pid)
         guard let url = webAreaURL(in: app, deadline: deadline) else { return nil }
         return host(of: url)
     }

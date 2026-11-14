@@ -15,6 +15,8 @@ struct TranslationRoute {
         var alreadyInTarget = false
         // Part of the source came back untranslated, also after a second try.
         var incomplete = false
+        // The chosen model on this Mac, named, when Apple stood in because it isn't downloaded yet.
+        var appleStoodInFor: String? = nil
         var usedAnyApple: Bool { usedApple || usedMixedProviders }
         var appleFallbackNoticeKey: String {
             if recovery == .apiKeyAccess {
@@ -25,6 +27,13 @@ struct TranslationRoute {
             if usedMixedProviders { return "Some parts were translated with Apple." }
             return preferredProviderDeferred
                 ? "Translated with Apple after a recent API failure." : "Translated with Apple"
+        }
+        // What every result surface says when Apple translated in place of the chosen service.
+        var appleFallbackNotice: String {
+            if let model = appleStoodInFor, recovery == nil, !usedMixedProviders {
+                return L10n.format("Translated with Apple until %@ is downloaded.", StandInName.unbroken(model))
+            }
+            return L10n.tr(appleFallbackNoticeKey)
         }
         init(
             text: String, usedApple: Bool, terminologyUnavailable: Bool = false,
@@ -68,4 +77,9 @@ struct TranslationRoute {
             }
         }
     }
+}
+
+// A name never splits across lines in a two-line notice.
+enum StandInName {
+    static func unbroken(_ name: String) -> String { name.replacingOccurrences(of: " ", with: "\u{00A0}") }
 }

@@ -8,15 +8,45 @@ import ApplicationServices
 // `sample` is the setup guide's read-aloud sample; it never names an editor side.
 enum SpeechSide: Equatable { case source, translation, sample }
 enum TranslationRecoveryAction: Equatable {
+    // `keychain`: the API's saved key waits for macOS to allow it.
     case keychain, service, writingService, openOllama, appleLanguages, appleIntelligence, accessibility
     case languages, shortcuts, readAloud, systemVoices
+    // A read-aloud service's saved key: allow access to it, or set it up where it is.
+    case speechKeyAccess(CredentialAccessService), speechKey(CredentialAccessService)
+    // The writer in use is set up wrong: its own editor. (`writingService` chooses one.)
+    case writer
+    // A command-line tool isn't signed in: Terminal opens on its sign-in command.
+    case cliSignIn(CLIProvider)
+    // Works on this Mac only: the choice that allows online.
+    case allowOnline
+    // Read aloud stopped at a saved key: allow it, or set it up in that service's editor.
+    static func speechFixing(_ error: Error, provider: SpeechProvider) -> TranslationRecoveryAction? {
+        if let issue = error as? ProcessingPolicyIssue, issue == .onDeviceOnly { return .allowOnline }
+        let service = CredentialAccessService(speech: provider)
+        // No key, or one the service refuses: set it up in that service's editor.
+        if let service,
+            (error as? CloudSpeechError).map(\.isKeyProblem) ?? (error as? SpeechAPIError)?.isKeyProblem ?? false
+        {
+            return .speechKey(service)
+        }
+        guard let issue = error as? APIError, case .keychain = issue else {
+            return error is SpeechAPIError || error is APIError || error is CloudSpeechError ? .readAloud : nil
+        }
+        guard let service else { return .readAloud }
+        if issue.needsKeyPermission { return .speechKeyAccess(service) }
+        return issue.isKeychainBusy ? nil : .speechKey(service)
+    }
     // The service works but can't answer for now (a usage limit): pick another one.
     case anotherService(writing: Bool)
 
     // The button that does what the message asks, in one or two words.
     func titleKey(writingSetup: Bool = false) -> String {
         switch self {
-        case .keychain: return "API key access…"
+        case .keychain, .speechKeyAccess: return "Allow access…"
+        case .speechKey: return "Set up…"
+        case .writer: return "Service settings…"
+        case .cliSignIn: return "Sign in…"
+        case .allowOnline: return "Allow online"
         case .openOllama: return "Open Ollama"
         case .appleLanguages: return "Download languages…"
         case .appleIntelligence: return "Turn on Apple Intelligence…"
@@ -38,12 +68,17 @@ enum TranslationRecoveryAction: Equatable {
 
     // The one fix a setup problem points to. Nil when trying again is the answer.
     static func fixing(_ error: Error, writing: Bool) -> TranslationRecoveryAction? {
-        let service: TranslationRecoveryAction = writing ? .writingService : .service
+        let service: TranslationRecoveryAction = writing ? .writer : .service
         if let failure = error as? TranslationRoute.Failure {
-            return fixing(failure.api, writing: writing) ?? fixing(failure.apple, writing: writing)
+            // A fallback that asks for a download names that download, so its button does too.
+            let apple = fixing(failure.apple, writing: writing)
+            if apple == .appleLanguages { return apple }
+            return fixing(failure.api, writing: writing) ?? apple
         }
         switch error {
-        case APIError.keychain: return .keychain
+        case let issue as APIError where issue.needsKeyPermission: return .keychain
+        case let issue as APIError where issue.isKeychainBusy: return nil
+        case APIError.keychain: return service
         case APIError.invalidEndpoint, APIError.missingModel, APIError.http(401), APIError.http(403),
             APIError.http(404):
             return service
@@ -51,6 +86,8 @@ enum TranslationRecoveryAction: Equatable {
             CLIError.missingModel:
             return service
         case CLIError.usageLimit: return .anotherService(writing: writing)
+        case CLIError.signedOut(let provider): return .cliSignIn(provider)
+        case CLIError.codexSignInFileMissing: return .cliSignIn(.codex)
         case CLIError.modelUnavailable: return service
         case LocalTranslationIssue.unavailable, LocalTranslationIssue.unsupportedLanguage: return service
         case ModelLibraryError.unknownModel, ModelLibraryError.unavailable: return service
@@ -58,8 +95,8 @@ enum TranslationRecoveryAction: Equatable {
         case OllamaIssue.notInstalled, OllamaIssue.noModel, OllamaIssue.modelMissing: return service
         case AppleTranslationIssue.downloadRequired: return .appleLanguages
         case AppleWriterIssue.unavailable(.intelligenceOff): return .appleIntelligence
-        case let issue as ProcessingPolicyIssue where issue == .onDeviceOnly: return service
-        case RefinementIssue.connectionRequired: return .writingService
+        case let issue as ProcessingPolicyIssue where issue == .onDeviceOnly: return .allowOnline
+        case RefinementIssue.connectionRequired, VoiceEditIssue.connectionRequired: return .writingService
         default: return nil
         }
     }
@@ -189,6 +226,8 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     @Published private(set) var outputIsStale = false
     @Published private(set) var needsTranslationRetry = false
     @Published private(set) var translationRecoveryAction: TranslationRecoveryAction?
+    // The side whose read aloud stopped for a saved key, read again once access is allowed.
+    private var speechStoppedForKey: SpeechSide?
     @Published private(set) var canRetryPreferredTranslation = false
     private enum CopyFeedback { case copied, failed }
     @Published private var copyFeedback: CopyFeedback?
@@ -387,6 +426,8 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     @Published private(set) var speechAudible = false
     // Why the guide's sample could not be read; the translator's notice stays untouched.
     @Published private(set) var sampleSpeechIssue: String?
+    // A Mac voice read the guide's sample in place of the chosen voice service.
+    @Published private(set) var sampleSpeechNote: String?
     private var activeSpeechText = ""
     private var activeSpeechLanguage = "en"
     @Published var slowSpeech = false
@@ -400,6 +441,9 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     private var speechContinuation: Task<Void, Never>?
     private var pendingSpeechAudio: Data?
     private var pendingSpeechFallback: String?
+    private var pendingSpeechFallbackNote: String?
+    // The stand-in note now showing, which belongs to the reading that put it there.
+    private var shownStandIn: String?
     private var awaitingSpeechContinuation = false
     private var continuationPlaybackRate: Float = 1
     private let languageDefaults: UserDefaults
@@ -1050,6 +1094,14 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     // After key access is allowed, run again whatever stopped for the key:
     // a refinement of the shown result, refined selected text, or the translation.
     func retryAfterKeyAccess() {
+        // Read aloud that stopped for its service's key reads the same side again.
+        if case .speechKeyAccess = translationRecoveryAction, let side = speechStoppedForKey {
+            speechStoppedForKey = nil
+            translationRecoveryAction = nil
+            notice = ""
+            listen(side)
+            return
+        }
         // A return that already restarted the work leaves it running.
         guard translationRecoveryAction == .keychain, !translating, !refiningTranslation else { return }
         let refinement = refinementStoppedForKey
@@ -1179,7 +1231,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 self.notice = [
                     route.incomplete ? L10n.tr("Part of this wasn’t translated.") : nil,
                     fallbackUsed
-                        ? L10n.tr(route.appleFallbackNoticeKey) : nil,
+                        ? route.appleFallbackNotice : nil,
                     route.terminologyUnavailable
                         ? L10n.tr(
                             route.usedAnyApple
@@ -1224,7 +1276,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 } else {
                     self.notice =
                         (error is ProcessingPolicyIssue || error is APIError || error is CLIError
-                            || error is LocalTranslationIssue || error is ModelLibraryError
+                            || error is OllamaIssue || error is LocalTranslationIssue || error is ModelLibraryError
                             || error is AppleTranslationIssue || error is TranslationError
                             || error is CoreLongTranslationError || error is StructuredJSONIssue)
                         ? error.localizedDescription
@@ -1457,7 +1509,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                         && $0.acceptedTranslation?.id == baseline.id
                 }
                 defer { progress.finish() }
-                let result = try await service.refine(
+                let (result, standIn) = try await service.refineNoted(
                     text: baseline.text, style: style, settings: settings, vocabularyContext: context,
                     progress: { update in
                         progress.send(
@@ -1477,7 +1529,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 self.translationWritingSelection = selection
                 self.translationWritingReviewNotice = review.notice
                 self.canRetryPreferredTranslation = false
-                self.notice = ""
+                self.notice = standIn ?? ""
                 self.outputHistoryRecordID = nil
                 if self.preferences.resultHistoryEnabled, let historyStore, let historyTicket {
                     let entry = ResultHistoryAcceptedResult(
@@ -1723,6 +1775,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         if speaking { speaking = false }
         if speechSide != nil { speechSide = nil }
         if speechAudible { speechAudible = false }
+        clearStandIn()
     }
     func listen(_ side: SpeechSide = .translation) {
         guard side != .sample, side == .source || canUseOutput else { return }
@@ -1739,6 +1792,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     // History and the working-service record stay untouched.
     func speakSample(_ text: String, language: String) {
         sampleSpeechIssue = nil
+        sampleSpeechNote = nil
         speak(text, hint: language, side: .sample)
     }
     private func reportSpeechIssue(_ message: String, side: SpeechSide?, fix: TranslationRecoveryAction? = nil) {
@@ -1746,7 +1800,9 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
             sampleSpeechIssue = message
         } else {
             notice = message
-            if let fix { translationRecoveryAction = fix }
+            // A newer notice never keeps an older notice's button.
+            translationRecoveryAction = fix
+            if case .speechKeyAccess = fix { speechStoppedForKey = side }
         }
     }
     // A notice from outside the translator, with the one action that resolves it.
@@ -1829,7 +1885,8 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 }
                 guard self.speechID == id, !Task.isCancelled else { return }
                 guard let data else {
-                    await self.speakLocallyAfterCatalog(text, language: language, id: id)
+                    await self.speakLocallyAfterCatalog(
+                        text, language: language, id: id, standIn: Self.macVoiceNote(provider))
                     return
                 }
                 let player = try AVAudioPlayer(data: data)
@@ -1864,19 +1921,48 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                     self.stopSpeaking()
                     self.reportSpeechIssue(
                         error.localizedDescription, side: side,
-                        fix: error is SpeechAPIError || error is APIError ? .readAloud : nil)
+                        fix: TranslationRecoveryAction.speechFixing(error, provider: provider))
                     return
                 }
-                await self.speakLocallyAfterCatalog(text, language: language, id: id)
+                // A saved key macOS hasn't allowed Yullo to read: its Allow access…, not a Mac voice.
+                if case .speechKeyAccess = TranslationRecoveryAction.speechFixing(error, provider: provider) {
+                    self.stopSpeaking()
+                    self.reportSpeechIssue(
+                        error.localizedDescription, side: side,
+                        fix: TranslationRecoveryAction.speechFixing(error, provider: provider))
+                    return
+                }
+                await self.speakLocallyAfterCatalog(
+                    text, language: language, id: id, standIn: Self.macVoiceNote(provider))
             }
         }
     }
     // A provider fallback loads installed voices off the main actor, then
     // rechecks Stop before speaking with the unchanged voice selection.
-    @MainActor private func speakLocallyAfterCatalog(_ text: String, language: String, id: UUID) async {
+    // The chosen voice service couldn't read this, so a Mac voice does; the note shows only
+    // once that voice is reading, and Stop or the next reading takes it away.
+    private static func macVoiceNote(_ provider: SpeechProvider?) -> String? {
+        guard let provider, provider != .macOS else { return nil }
+        return L10n.format(
+            "Read with a Mac voice. %@ wasn’t available.", StandInName.unbroken(SpeechSettingsFields.title(provider)))
+    }
+    private func showStandIn(_ note: String?, side: SpeechSide?) {
+        guard let note, let side else { return }
+        if side == .sample { sampleSpeechNote = note } else { notice = note }
+        shownStandIn = note
+    }
+    private func clearStandIn() {
+        guard let shown = shownStandIn else { return }
+        if notice == shown { notice = "" }
+        if sampleSpeechNote == shown { sampleSpeechNote = nil }
+        shownStandIn = nil
+    }
+    @MainActor private func speakLocallyAfterCatalog(
+        _ text: String, language: String, id: UUID, standIn: String? = nil
+    ) async {
         await Task.detached(priority: .userInitiated) { _ = MacVoiceCatalog.voices(for: language) }.value
         guard speechID == id, !Task.isCancelled else { return }
-        speakLocally(text, language: language)
+        speakLocally(text, language: language, standIn: standIn)
     }
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         guard audioPlayer === player else { return }
@@ -1887,8 +1973,10 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
             return
         }
         if let rest = pendingSpeechFallback {
+            let note = pendingSpeechFallbackNote
             pendingSpeechFallback = nil
-            speakLocally(rest, language: activeSpeechLanguage)
+            pendingSpeechFallbackNote = nil
+            speakLocally(rest, language: activeSpeechLanguage, standIn: note)
             return
         }
         // The rest is still being generated; it starts playing when ready.
@@ -1900,7 +1988,9 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         guard audioPlayer === player else { return }
         audioPlayer = nil
         cancelSpeechContinuation()
-        speakLocally(activeSpeechText, language: activeSpeechLanguage)
+        speakLocally(
+            activeSpeechText, language: activeSpeechLanguage,
+            standIn: Self.macVoiceNote(SpeechProvider(rawValue: preferences.speechEngine)))
     }
     private func continueLocalSpeech(
         _ rest: String, language: String, modelID: String, voiceID: String, rate: Double, reference: URL?,
@@ -1928,11 +2018,12 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 }
             case .failure(let error):
                 if error is CancellationError { return }
-                // Like a failed whole passage, the remaining text uses a Mac voice.
+                // Like a failed whole passage, the remaining text uses a Mac voice, and says so.
                 if self.audioPlayer == nil {
-                    self.speakLocally(rest, language: language)
+                    self.speakLocally(rest, language: language, standIn: Self.macVoiceNote(.local))
                 } else {
                     self.pendingSpeechFallback = rest
+                    self.pendingSpeechFallbackNote = Self.macVoiceNote(.local)
                 }
             }
         }
@@ -1960,9 +2051,10 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         speechContinuation = nil
         pendingSpeechAudio = nil
         pendingSpeechFallback = nil
+        pendingSpeechFallbackNote = nil
         awaitingSpeechContinuation = false
     }
-    private func speakLocally(_ text: String, language: String) {
+    private func speakLocally(_ text: String, language: String, standIn: String? = nil) {
         let matching = MacVoiceCatalog.voices(for: language)
         guard
             let voice = matching.first(where: { $0.identifier == preferences.voiceIDs[language] })
@@ -1988,6 +2080,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         }
         speaker?.speak(utterance)
         speechAudible = true
+        showStandIn(standIn, side: speechSide)
     }
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         DispatchQueue.main.async {
@@ -2005,13 +2098,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
             self.speechSide = nil
         }
     }
-    static func openAccessibilitySettings() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
-    }
+    static func openAccessibilitySettings() { AccessibilityGrant.openSettings() }
     var canReplaceSelection: Bool {
         guard selectionContext, replacementToken != nil, canUseOutput, !replacingSelection, !translationIncomplete,
             let selectedOriginalText
@@ -2208,7 +2295,8 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                                 ? "The original selection changed. Select the text again."
                                 : "Couldn’t access the original selection. Select it again.")
                 case .permission:
-                    recoveryNotice = L10n.tr("Replacing text needs Accessibility access.")
+                    recoveryNotice =
+                        AccessibilityGrant.current().message ?? L10n.tr("Replacing text needs Accessibility access.")
                     self.translationRecoveryAction = .accessibility
                 case .uncertain:
                     recoveryNotice = L10n.tr("Check the original app before inserting again.")

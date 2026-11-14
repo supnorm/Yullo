@@ -20,9 +20,9 @@ struct PermissionSettingsView: View {
                     perform: permissions.microphoneAction)
                 permissionRow(
                     title: "Accessibility",
-                    purpose: "Lets dictation type into other apps, and the keys work on text you select.",
+                    purpose: AccessibilityRowText.purpose(permissions.status, asked: permissions.askedAccessibility),
                     status: accessibilityStatus, allowed: permissions.status?.accessibility,
-                    action: permissions.status?.accessibility == true ? nil : "Enable…",
+                    action: AccessibilityRowText.action(permissions.status),
                     perform: permissions.accessibilityAction)
             }
         }
@@ -89,6 +89,28 @@ struct PermissionSettingsView: View {
         guard let status = permissions.status else { return "Checking…" }
         return status.accessibility ? "Allowed" : "Not allowed"
     }
+}
+
+// The Accessibility row's words, the same in Settings and the guide: its purpose, or,
+// once Enable… was pressed and it still isn't working, AccessibilityGrant's reason
+// with its fix; and the one action.
+enum AccessibilityRowText {
+    static func purpose(_ status: VoicePermissionStatus?, asked: Bool) -> String {
+        guard let status else { return L10n.tr(purposeKey) }
+        switch status.accessibilityState {
+        case .notApplied: return status.accessibilityState.message ?? L10n.tr(purposeKey)
+        case .missing where asked: return status.accessibilityState.message ?? L10n.tr(purposeKey)
+        default: return L10n.tr(purposeKey)
+        }
+    }
+    static func action(_ status: VoicePermissionStatus?) -> String? {
+        switch status?.accessibilityState {
+        case .granted: return nil
+        case .notApplied: return "Open Settings…"
+        default: return "Enable…"
+        }
+    }
+    private static let purposeKey = "Lets dictation type into other apps, and the keys work on text you select."
 }
 
 #if YULLO_TESTING

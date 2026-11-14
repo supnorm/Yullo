@@ -294,8 +294,8 @@ struct SpeechSettingsBackend {
     var voiceCatalogActionTitle: String { hasLoadedVoices ? "Refresh voice list" : "Load available voices" }
 }
 
-// Settings supplies the way to its saved-key access controls, so a key that
-// can't be read names the place to fix it instead of a page to look for.
+// Read aloud supplies the way to the service's key line in Services, which goes on
+// to Allow access; inside that editor the key line itself is the fix.
 private struct OpenSavedKeyAccessKey: EnvironmentKey {
     static let defaultValue: (@MainActor () -> Void)? = nil
 }
@@ -325,22 +325,15 @@ private struct SpeechSettingsFeedback: View {
                         ? Color.green : session.messageTone == .failure ? .orange : .secondary
                 )
                 .accessibilityIdentifier("speech-settings-feedback")
-            if session.needsKeyAccess {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n.tr("Allow saved key access in Quick setup."))
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let openSavedKeyAccess {
-                        Button(L10n.tr("Saved key access…"), action: openSavedKeyAccess).buttonStyle(.link)
-                            .font(.system(size: 11)).accessibilityIdentifier("speech-settings-key-access-open")
+            if session.needsKeyAccess, let openSavedKeyAccess {
+                Button(L10n.tr("Allow access…"), action: openSavedKeyAccess).buttonStyle(.link)
+                    .font(.system(size: 11)).accessibilityIdentifier("speech-settings-key-access-open")
+                    .background {
+                        #if YULLO_TESTING
+                            YulloActionPresentationProbe(
+                                title: "speech-key-access-guidance", action: openSavedKeyAccess)
+                        #endif
                     }
-                }
-                .accessibilityIdentifier("speech-settings-key-access-guidance")
-                .background {
-                    #if YULLO_TESTING
-                        YulloActionPresentationProbe(title: "speech-key-access-guidance", action: {})
-                    #endif
-                }
             }
         }
     }
@@ -356,6 +349,8 @@ struct CloudSpeechSettingsView: View {
     var voiceInputActive = false
     var commitCredentials: () -> Bool = { true }
     var credentialForgotten: (String) -> Void = { _ in }
+    // Allow access pressed where Read aloud stopped for this key.
+    @Binding var keyAllowRequest: CredentialAccessService?
     let isExpanded: Binding<Bool>?
     let voicesExpanded: Binding<Bool>?
     let preferredProvider: SpeechProvider?
@@ -369,6 +364,8 @@ struct CloudSpeechSettingsView: View {
     @FocusState private var keyFocused: Bool
     @FocusState private var connectionFieldFocused: Bool
     @StateObject private var session: SpeechSettingsSession
+    // This service's saved key, read silently as the editor opens.
+    @StateObject private var keyAccess = CredentialAccessController(backend: GuidedSetupView.keyBackend)
     @State private var provider = SpeechProvider.azure
     @State private var forgetTarget: SpeechKeyRemovalTarget?
     @State private var successfulForgetTransition: SpeechKeyRemovalTransition?
@@ -380,7 +377,9 @@ struct CloudSpeechSettingsView: View {
     @MainActor init(
         draft: Binding<Preferences>, enteredKeys: Binding<[String: String]>, voiceLanguage: Binding<String>,
         stopCurrentSpeech: @escaping () -> Void, voiceInputActive: Bool = false,
-        commitCredentials: @escaping () -> Bool = { true }, credentialForgotten: @escaping (String) -> Void = { _ in },
+        commitCredentials: @escaping () -> Bool = { true },
+        keyAllowRequest: Binding<CredentialAccessService?> = .constant(nil),
+        credentialForgotten: @escaping (String) -> Void = { _ in },
         session: SpeechSettingsSession? = nil, isExpanded: Binding<Bool>? = nil,
         voicesExpanded: Binding<Bool>? = nil, preferredProvider: SpeechProvider? = nil,
         revealedSections: Set<SettingsVisibilitySection> = [],
@@ -394,6 +393,7 @@ struct CloudSpeechSettingsView: View {
         self.voiceInputActive = voiceInputActive
         self.commitCredentials = commitCredentials
         self.credentialForgotten = credentialForgotten
+        _keyAllowRequest = keyAllowRequest
         self.isExpanded = isExpanded
         self.voicesExpanded = voicesExpanded
         self.preferredProvider = preferredProvider
@@ -403,6 +403,18 @@ struct CloudSpeechSettingsView: View {
     }
     private var configuration: SpeechAPIConfiguration { SpeechSettingsFields.configuration(draft, provider: provider) }
     private var voicesExpansion: Binding<Bool> { voicesExpanded ?? $localVoicesExpanded }
+    private var keyInspection: Set<CredentialAccessService> {
+        CredentialAccessService(speech: provider).map { [$0] } ?? []
+    }
+    // What names this service's saved key: the service and where it is.
+    private struct KeyScope: Equatable {
+        let provider: SpeechProvider, region: String, endpoints: [String]
+        init(draft: Preferences, provider: SpeechProvider) {
+            self.provider = provider
+            region = draft.azureRegion
+            endpoints = [draft.googleSpeech.endpoint, draft.elevenLabsSpeech.endpoint, draft.speechAPI.endpoint]
+        }
+    }
     private var hasInteraction: Bool {
         presented && (keyFocused || connectionFieldFocused || confirmingForget || voiceInteraction)
     }
@@ -483,6 +495,9 @@ struct CloudSpeechSettingsView: View {
                         )
                         .font(.system(size: 12)).foregroundStyle(keySaveResult ? Color.green : Color.orange)
                     }
+                    if let service = CredentialAccessService(speech: provider) {
+                        SavedKeyAccessLine(access: keyAccess, service: service, allowRequest: $keyAllowRequest)
+                    }
                     if provider == .google {
                         Text(L10n.tr("Enable Cloud Text-to-Speech and use an API key for that project."))
                             .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -515,6 +530,7 @@ struct CloudSpeechSettingsView: View {
                     }.buttonStyle(.link)
                 }.font(.system(size: 12))
             }.font(.system(size: 13)).padding(embedded ? 0 : 12)
+                .environment(\.openSavedKeyAccess, nil)
         }.disabled(voiceInputActive)
             .onAppear {
                 presented = true
@@ -526,6 +542,7 @@ struct CloudSpeechSettingsView: View {
                 {
                     provider = active
                 }
+                keyAccess.appear(targets: CredentialAccessTargets.make(draft), inspecting: keyInspection)
                 #if YULLO_TESTING
                     yulloTestingCaptureAttachedSpeechKeyRemoval? {
                         guard let target = try? keyRemovalTarget() else { return nil }
@@ -539,6 +556,16 @@ struct CloudSpeechSettingsView: View {
                 provider = value
             }
             .onChange(of: voiceInputActive) { _, active in if active { session.cancel() } }
+            .onChange(of: KeyScope(draft: draft, provider: provider)) { _, _ in
+                keyAccess.configure(CredentialAccessTargets.make(draft), inspecting: keyInspection)
+            }
+            // A key saved here, or a read that macOS refused, is read again silently.
+            .onChange(of: keySaveResult) { _, saved in
+                if saved == true, let service = CredentialAccessService(speech: provider) { keyAccess.check(service) }
+            }
+            .onChange(of: session.needsKeyAccess) { _, needs in
+                if needs, let service = CredentialAccessService(speech: provider) { keyAccess.check(service) }
+            }
             .onChange(of: keyFocused) { old, focused in if old && !focused { _ = commitCredentials() } }
             .onChange(of: provider) { _, _ in keySaveResult = nil }
             .onChange(of: enteredKeys) { _, keys in
@@ -555,6 +582,7 @@ struct CloudSpeechSettingsView: View {
                 presented = false
                 interactionChanged(false)
                 session.cancel(clearCatalog: true)
+                keyAccess.disappear()
             }
             .confirmationDialog(L10n.tr("Forget this saved API key?"), isPresented: $confirmingForget) {
                 Button(L10n.tr("Forget key"), role: .destructive) {

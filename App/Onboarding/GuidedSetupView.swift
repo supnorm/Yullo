@@ -1,10 +1,34 @@
 import SwiftUI
 import AppKit
 
-// The guide left with Not now or Set up later, kept while Yullo runs so Quick
-// setup can continue it after Settings closes.
+// The guide left with Not now or Set up later, kept so Quick setup and the menu
+// continue it. The step outlives a quit; the choices behind it were applied
+// when the person left Languages, so they come back from the preferences.
 @MainActor enum GuidedSetupResume {
-    static var draft: GuidedSetupDraft?
+    static var draft: GuidedSetupDraft? {
+        didSet {
+            if let step = draft?.step {
+                defaults.set(step.rawValue, forKey: stepKey)
+            } else {
+                defaults.removeObject(forKey: stepKey)
+            }
+        }
+    }
+    static let stepKey = "yullo.guideStep"
+    #if YULLO_TESTING
+        static var defaults = UserDefaults.standard
+    #else
+        static let defaults = UserDefaults.standard
+    #endif
+    // The guide as it was left in an earlier launch, or nil when it was finished or never started.
+    static func restored(_ preferences: Preferences, target: String) -> GuidedSetupDraft? {
+        if let draft { return draft }
+        guard defaults.object(forKey: stepKey) != nil,
+            let step = GuidedSetupStep(rawValue: defaults.integer(forKey: stepKey))
+        else { return nil }
+        return .init(
+            plan: .init(preferences: preferences, targetLanguage: target), usesBuiltInMacSetup: false, step: step)
+    }
 }
 
 struct GuidedSetupDraft: Equatable {
@@ -84,8 +108,12 @@ struct GuidedSetupDraft: Equatable {
     @State private var languageSheet: LanguageSheet?
     // I also use other languages: folded on arrival, open for the rest of the visit once opened.
     @State private var otherLanguagesShown = false
-    // Translate with, Write with and the recognizer wait behind one row that names them.
-    @State private var servicesShown = false
+    // The translation model the guide is downloading; it becomes the translator when it arrives.
+    @State private var translationDownload: String?
+    @State private var hardware: ModelHardwareProfile?
+    // Other writing services, folded under the one recommended for this Mac.
+    @State private var otherWritersShown = false
+    @State private var recognitionShown = false
     // The step's own height and the room it has; the window follows the difference.
     @State private var stepHeight: CGFloat = 0
     @State private var stepRoom: CGFloat = 0
@@ -297,6 +325,9 @@ struct GuidedSetupDraft: Equatable {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
+            // Back from Terminal: a tool installed or signed in there is recommended at once.
+            let current = model.preferences
+            Task { await installedCLIs.rescan(current) }
             if visible && needsAppleSpeech { appleSpeechActivation &+= 1 }
         }
         // Both voice rows allowed while on Voice access, back in Yullo: on to Try it.
@@ -329,9 +360,6 @@ struct GuidedSetupDraft: Equatable {
         .onChange(of: useBuiltInMacSetup) { _, _ in
             saveDraft()
         }
-        .onChange(of: progress.step) { _, _ in
-            saveDraft()
-        }
         .onChange(of: model.preferences) { _, _ in
             rebasePlan()
             keyAccess.configure(CredentialAccessTargets.make(reviewedPreferences), inspecting: [.textAPI])
@@ -341,7 +369,6 @@ struct GuidedSetupDraft: Equatable {
         .onChange(of: plan.recognitionModelID) { _, modelID in
             if modelID != VoiceRecognitionSettings.appleModelID { useBuiltInMacSetup = false }
         }
-        .onChange(of: readiness) { _, _ in resumeForwardIfReady() }
     }
 
     private var brandHeader: some View {
@@ -361,7 +388,8 @@ struct GuidedSetupDraft: Equatable {
         return layout {
             ForEach(GuidedSetupStep.allCases, id: \.rawValue) { item in
                 let current = item == progress.step
-                let done = item.rawValue < progress.step.rawValue
+                // A step left behind earns its check only once its task works; a skipped one keeps its number.
+                let done = item.rawValue < progress.step.rawValue && stepWorks(item)
                 Button {
                     revisit(item)
                 } label: {
@@ -378,9 +406,12 @@ struct GuidedSetupDraft: Equatable {
                                 : done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary)
                         )
                         .frame(width: 22)
-                        Text(phaseTitle(item)).font(.system(size: 13, weight: current ? .semibold : .regular))
-                            .foregroundStyle(item.rawValue > progress.step.rawValue ? .secondary : .primary)
-                            .lineLimit(1)
+                        // Across the top, six titles don't fit: the current one names itself, the rest are numbers.
+                        if vertical || current {
+                            Text(phaseTitle(item)).font(.system(size: 13, weight: current ? .semibold : .regular))
+                                .foregroundStyle(item.rawValue > progress.step.rawValue ? .secondary : .primary)
+                                .lineLimit(1).minimumScaleFactor(0.85)
+                        }
                         if vertical { Spacer(minLength: 0) }
                     }
                     .padding(.horizontal, vertical ? 10 : 6).frame(height: 32)
@@ -399,7 +430,12 @@ struct GuidedSetupDraft: Equatable {
                             "%@, step %ld of %ld", phaseTitle(item), item.rawValue + 1, GuidedSetupStep.allCases.count)
                     )
                     .accessibilityValue(
-                        L10n.tr(current ? "Current" : done ? "Complete" : "Not started"))
+                        L10n.tr(
+                            current
+                                ? "Current"
+                                : done
+                                    ? "Complete" : item.rawValue < progress.step.rawValue ? "Not set up" : "Not started"
+                        ))
             }
             if !vertical { Spacer(minLength: 0) }
         }.padding(.top, 3)
@@ -419,6 +455,8 @@ struct GuidedSetupDraft: Equatable {
                     }.id("guide-top")
                     switch progress.step {
                     case .choices: basics
+                    case .translation: translationStep
+                    case .writing: writingStep
                     case .permissions: voiceAccess
                     case .trial: trial.onAppear { if recognitionReady { prepareTrial() } }
                     case .more: moreWays
@@ -427,6 +465,15 @@ struct GuidedSetupDraft: Equatable {
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { stepHeight = $0 }
             }.smallNativeScrollbars()
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { stepRoom = $0 }
+                // Taller than its room (the smallest window): the last lines fade out at the
+                // edge instead of being cut at full ink; scrolling brings them in.
+                .mask {
+                    VStack(spacing: 0) {
+                        Rectangle()
+                        LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: stepHeight > stepRoom + 1 ? 22 : 0)
+                    }
+                }
                 .background {
                     // On its own, the guide's window is as tall as the step; it scrolls only
                     // when the screen is too short for it.
@@ -463,38 +510,11 @@ struct GuidedSetupDraft: Equatable {
         }
     }
 
-    // Languages first; the services behind them are good defaults, named on one folded row.
-    // A recognizer that is not ready yet opens the row, so its fix is never hidden.
+    // Languages first; each service they need is set up on its own step after this one.
     private var basics: some View {
         SettingsSection(L10n.tr("Languages")) {
-            SettingsRows {
-                languagesSetup
-                SettingsDisclosureRow(
-                    title: L10n.tr("Services"), summary: servicesSummary,
-                    isExpanded: Binding(
-                        get: { servicesShown || recognitionNeedsAttention },
-                        set: { servicesShown = $0 })
-                ).accessibilityIdentifier("guide-services")
-                if servicesShown || recognitionNeedsAttention {
-                    translationSetup
-                    recognitionSetup
-                }
-            }
+            SettingsRows { languagesSetup }
         }
-    }
-    private var recognitionNeedsAttention: Bool {
-        recognitionDownload.pendingID == nil && (!recognitionReady || verificationIssue != nil)
-            && readiness != .checking
-    }
-    // What is set, in the pop-ups' own words: the translator, then the writer.
-    private var servicesSummary: String {
-        let preferences = reviewedPreferences
-        let writer =
-            writingReadiness == .ready
-            ? WritingServicePresentation.title(preferences.voiceRefinementEngine, preferences: preferences)
-            : L10n.tr("Writer not set up")
-        return [TranslateWithRow.title(preferences.engine, preferences: preferences), writer]
-            .joined(separator: L10n.listSeparator)
     }
 
     private func languageName(_ id: String) -> String {
@@ -615,31 +635,190 @@ struct GuidedSetupDraft: Equatable {
         }
     }
 
-    @ViewBuilder private var translationSetup: some View {
-        // The shared translator, staged in this guide's plan until it applies.
-        TranslateWithRow(
-            draft: Binding(
-                get: { reviewedPreferences },
-                set: {
-                    var staged = plan
-                    staged.stageTranslator($0)
-                    editedPlan.wrappedValue = staged
-                }),
-            models: models,
-            caption: TranslateWithRow.caption(oneLanguage: plan.otherLanguages.isEmpty),
-            openServices: { setUp($0) }, showsDetails: false)
-        // The writer Refine and the formats use. Optional: translation and dictation work without it.
-        WriteWithRow(
-            draft: Binding(
-                get: { reviewedPreferences },
-                set: {
-                    var staged = plan
-                    staged.stageWriter($0)
-                    editedPlan.wrappedValue = staged
-                }),
-            caption: L10n.tr("For Refine and formats like Email."), openServices: { setUp($0) })
+    // Translation: the model that runs on this Mac, downloaded here with its size, then a
+    // Try on the sample. Translate with keeps every other choice, as in Settings.
+    private var translationStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox {
+                SettingsRows {
+                    if let offer = translationOffer { translationModelRow(offer) }
+                    TranslateWithRow(
+                        draft: Binding(
+                            get: { reviewedPreferences },
+                            set: { value in stageNow { $0.stageTranslator(value) } }),
+                        models: models, openServices: { setUp($0) }, showsDetails: false)
+                }
+            }
+            sampleCard(.translate, title: "Translate", blocked: fix(for: translationReadiness)?.status)
+        }.task { if hardware == nil { hardware = await ModelHardwareProfile.load() } }
+    }
+    // The translation model this Mac should use, while none is on it yet.
+    private var translationOffer: LocalModelDescriptor? {
+        guard !models.installed.contains(where: { $0.task == .translation }) else { return nil }
+        return GuidedTranslationOffer.model(languages: plan.languages, hardware: hardware)
+    }
+    private func translationModelRow(_ offer: LocalModelDescriptor) -> some View {
+        let room = GuidedTranslationOffer.hasRoom(offer, hardware: hardware)
+        return VStack(alignment: .leading, spacing: 6) {
+            SettingsTaskRow(title: offer.name, caption: L10n.tr("Runs on this Mac")) {
+                if models.downloads[offer.id] == nil {
+                    Button(RecognitionModelMenu.downloadTitle(offer.id)) { downloadTranslationModel(offer.id) }
+                        .keyboardShortcut(.defaultAction).disabled(!room)
+                        .accessibilityIdentifier("guide-translation-download")
+                        .background {
+                            guideExitProbe("guide-translation-download") { downloadTranslationModel(offer.id) }
+                        }
+                }
+            }
+            if let progress = models.downloads[offer.id] {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let fraction = progress.fraction, fraction.isFinite, progress.phase != .verifying {
+                        ProgressView(value: min(1, max(0, fraction))).controlSize(.small)
+                    } else {
+                        ProgressView().progressViewStyle(.linear).controlSize(.small)
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(RecognitionModelMenu.progressLabel(progress)).foregroundStyle(.secondary).monospacedDigit()
+                        Spacer(minLength: 8)
+                        Button(L10n.tr("Cancel")) { models.cancel(offer.id) }.buttonStyle(.link)
+                    }
+                }.font(.system(size: 11)).accessibilityIdentifier("guide-translation-progress")
+            } else if let message = models.errors[offer.id] {
+                inlineIssue(message).font(.system(size: 11))
+            } else if !room {
+                // The one reason; Translate with below still offers Apple's translation.
+                inlineIssue(
+                    L10n.tr("Not enough free space to download this model. Free up space on this Mac and try again.")
+                ).font(.system(size: 11)).accessibilityIdentifier("guide-translation-no-room")
+            }
+        }
+    }
+    private func downloadTranslationModel(_ id: String) {
+        guard visible, progress.step == .translation, models.downloads[id] == nil else { return }
+        let handle = models.startOrJoinDownload(id)
+        // Download here chooses this model, as a pending choice in a model menu does:
+        // it translates once it arrives, unless Translate with changed meanwhile.
+        let baseline = reviewedPreferences.engine
+        translationDownload = id
+        Task { @MainActor in
+            let installed = await models.waitForDownload(handle)
+            guard translationDownload == id else { return }
+            translationDownload = nil
+            guard installed, reviewedPreferences.engine == baseline else { return }
+            stageNow { staged in
+                var value = reviewedPreferences
+                value.engine = "local"
+                value.localTranslationModelID = id
+                staged.stageTranslator(value)
+            }
+        }
     }
 
+    // Writing: the service that suits this Mac, used with one press; the others below,
+    // set up in place as in the chooser. Then a Try on the sample.
+    private var writingStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if writingReadiness == .ready {
+                GroupBox {
+                    SettingsRows {
+                        WriteWithRow(
+                            draft: Binding(
+                                get: { reviewedPreferences },
+                                set: { value in stageNow { $0.stageWriter(value) } }),
+                            caption: L10n.tr("For Refine and formats like Email."), openServices: { setUp($0) },
+                            showsFallback: false)
+                    }
+                }
+            } else {
+                // One service leads: Apple's model or a tool already on this Mac with Use,
+                // else the one that fits Where Yullo works: Ollama on this Mac only, an online
+                // service (its form open) otherwise. The others fold under it.
+                if let recommended = recommendedWriter {
+                    GroupBox { SettingsRows { recommendedWriterRow(recommended) } }
+                } else {
+                    writerChooser(shown: [onDeviceOnly ? "ollama" : "api"], opensAPIForm: !onDeviceOnly)
+                }
+                SettingsDisclosureRow(title: L10n.tr("Other services"), summary: nil, isExpanded: $otherWritersShown)
+                    .padding(.horizontal, 4).accessibilityIdentifier("guide-other-writers")
+                if otherWritersShown {
+                    writerChooser(shown: otherWriterKinds)
+                }
+            }
+            sampleCard(
+                .refine, title: "Refine",
+                blocked: writingReadiness == .ready ? nil : L10n.tr("Needs a writing service."))
+        }
+    }
+    // Every kind but the one leading: Apple's model, a tool on this Mac, or the online service.
+    private var otherWriterKinds: Set<String> {
+        switch recommendedWriter {
+        case .apple: return ["ollama", "api", "cli"]
+        case .cli: return ["apple", "ollama", "api"]
+        case nil: return onDeviceOnly ? ["apple", "api", "cli"] : ["apple", "ollama", "cli"]
+        }
+    }
+    private var onDeviceOnly: Bool { reviewedPreferences.processingPolicy == .onDeviceOnly }
+    private func writerChooser(shown: Set<String>, opensAPIForm: Bool = false) -> some View {
+        WritingServiceChooser(
+            draft: Binding(get: { reviewedPreferences }, set: { value in stageNow { $0.stageWriter(value) } }),
+            setUp: { setUp($0) }, close: {}, inline: true, shown: shown, opensAPIForm: opensAPIForm)
+    }
+    // Apple's model where it runs on this Mac, else a command-line tool already signed in here.
+    private var recommendedWriter: GuidedWriterRecommendation? {
+        GuidedWriterRecommendation.make(
+            apple: AppleWriterStatus.availability(), installed: installedCLIs.offers(reviewedPreferences),
+            signedIn: installedCLIs.signedIn, onDeviceOnly: onDeviceOnly)
+    }
+    private func recommendedWriterRow(_ recommended: GuidedWriterRecommendation) -> some View {
+        SettingsTaskRow(title: recommended.title, caption: recommended.caption) {
+            Button(L10n.tr("Use")) { useWriter(recommended) }.keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("guide-use-writer")
+                .background { guideExitProbe("guide-use-writer") { useWriter(recommended) } }
+        }
+    }
+    private func useWriter(_ recommended: GuidedWriterRecommendation) {
+        guard visible, progress.step == .writing else { return }
+        switch recommended {
+        case .apple:
+            stageNow { staged in
+                var value = reviewedPreferences
+                value.voiceRefinementEngine = "apple"
+                staged.stageWriter(value)
+            }
+        case .cli(let setup):
+            stageNow { $0.stageWriter(InstalledCLIs.choose(setup, writing: true, in: reviewedPreferences)) }
+        }
+    }
+    // A choice made on the Translation or Writing step applies at once, so its Try uses it.
+    private func stageNow(_ change: (inout GuidedSetupPlan) -> Void) {
+        var staged = plan
+        change(&staged)
+        guard staged != plan else { return }
+        editedPlan.wrappedValue = staged
+        _ = applyPlan()
+    }
+    // The step's Sample card: the sample, the Try that shows this step working, and its result.
+    private func sampleCard(_ task: GuidedTourTask, title: String, blocked: String?) -> some View {
+        GuideSampleCard(
+            session: tourSession, speech: tourSpeech, cancel: tourSession.cancel,
+            setUpWriting: { otherWritersShown = true },
+            tryAction: tour == nil
+                ? nil
+                : .init(
+                    title: title, enabled: blocked == nil && tourSession.running == nil, help: blocked,
+                    action: { tryFeature(task) })
+        ).id("guide-tour-sample")
+    }
+
+    private var recognitionNeedsAttention: Bool {
+        recognitionDownload.pendingID == nil && (!recognitionReady || verificationIssue != nil)
+            && readiness != .checking
+    }
+    // What recognizes now: the chosen model on this Mac, or Apple Speech.
+    private var recognitionSummary: String? {
+        if let selectedLocalModel { return selectedLocalModel.name }
+        return readiness.canTry ? L10n.tr("Apple Speech · on device") : nil
+    }
     @ViewBuilder private var recognitionSetup: some View {
         recognitionPicker
         if requiresLanguageHint {
@@ -725,14 +904,14 @@ struct GuidedSetupDraft: Equatable {
                         title: "Microphone", detail: nil, allowed: microphoneAllowed,
                         status: microphoneStatus, action: microphoneAllowed ? nil : microphoneAction,
                         perform: enableMicrophone)
+                    // The same words and check as Settings: listed but not active has its own fix.
                     permissionRow(
                         title: "Accessibility",
-                        detail:
-                            "Lets dictation type into other apps, and the keys work on text you select.",
+                        detail: AccessibilityRowText.purpose(permissions.status, asked: permissions.askedAccessibility),
                         allowed: permissions.status?.accessibility == true,
                         status: permissions.status == nil
-                            ? "Checking…" : permissions.status?.accessibility == true ? "Allowed" : "Optional",
-                        action: permissions.status?.accessibility == true ? nil : "Enable…",
+                            ? "Checking…" : permissions.status?.accessibility == true ? "Allowed" : "Not allowed",
+                        action: AccessibilityRowText.action(permissions.status),
                         perform: permissions.accessibilityAction)
                 }
             }
@@ -766,6 +945,7 @@ struct GuidedSetupDraft: Equatable {
                     .disabled(permissions.status == nil || permissions.isRequestingMicrophone)
                     .help(L10n.tr(status))
                     .accessibilityLabel(L10n.tr(title) + ": " + L10n.tr(action))
+                    .background { guideExitProbe("guide-permission-" + title, action: perform) }
             } else if allowed {
                 Label(L10n.tr(status), systemImage: "checkmark.circle.fill").font(.system(size: 12))
                     .foregroundStyle(.green)
@@ -793,6 +973,14 @@ struct GuidedSetupDraft: Equatable {
             if !trialSucceeded {
                 GroupBox {
                     SettingsRows {
+                        // The recognizer, on one row; it opens itself when it can't recognize yet,
+                        // so its fix (a download, a language) is never hidden.
+                        SettingsDisclosureRow(
+                            title: L10n.tr("Recognition model"), summary: recognitionSummary,
+                            isExpanded: Binding(
+                                get: { recognitionShown || recognitionNeedsAttention }, set: { recognitionShown = $0 })
+                        ).disabled(trialRunning).accessibilityIdentifier("guide-recognition")
+                        if recognitionShown || recognitionNeedsAttention { recognitionSetup }
                         SettingsDisclosureRow(
                             title: L10n.tr("Recording indicator"),
                             summary: VoiceOverlayPlacement(rawValue: plan.voicePlacement).map(
@@ -858,11 +1046,20 @@ struct GuidedSetupDraft: Equatable {
     @ViewBuilder private var backwardButton: some View {
         if progress.step != .choices {
             Button(L10n.tr("Back"), action: previousStep).fixedSize()
-        } else {
-            Button(L10n.tr("Not now"), action: closeSetup).fixedSize()
         }
     }
-    @ViewBuilder private var forwardButtons: some View {
+    // One way to leave on every step, beside the way on: Finish later keeps the step
+    // and the choices, and Quick setup or Setup Guide… continues there.
+    private var forwardButtons: some View {
+        HStack(spacing: 16) {
+            if progress.step != .more {
+                Button(L10n.tr("Finish later"), action: closeSetup).buttonStyle(.link).fixedSize()
+                    .background { guideExitProbe("guide-set-up-later", action: closeSetup) }
+            }
+            stepForwardButtons
+        }
+    }
+    @ViewBuilder private var stepForwardButtons: some View {
         if progress.step == .more {
             Button(L10n.tr("Done"), action: finishSetup).keyboardShortcut(.defaultAction).fixedSize()
         } else if progress.step == .trial {
@@ -875,17 +1072,33 @@ struct GuidedSetupDraft: Equatable {
                     }
                     Button(L10n.tr("Skip"), action: showMoreWays).keyboardShortcut(.return, modifiers: .command)
                         .help(L10n.tr("Skip") + " · ⌘↩").fixedSize()
+                        .background { guideExitProbe("guide-step-forward", action: showMoreWays) }
                 }
             } else {
                 Button(L10n.tr("Continue"), action: showMoreWays)
                     .keyboardShortcut(.defaultAction).fixedSize()
+                    .background { guideExitProbe("guide-step-forward", action: showMoreWays) }
+            }
+        } else if progress.step == .translation || progress.step == .writing {
+            // Continue once the step's task works, Skip while it doesn't. A step with its
+            // own primary button (Download, Use) leaves Return to that button.
+            let ready = progress.step == .translation ? translationReadiness == .ready : writingReadiness == .ready
+            let primary =
+                progress.step == .translation
+                ? translationOffer != nil && translationDownload == nil
+                : !ready && recommendedWriter != nil
+            Group {
+                if primary || !ready {
+                    Button(L10n.tr(ready ? "Continue" : "Skip"), action: nextStep)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help(L10n.tr(ready ? "Continue" : "Skip") + " · ⌘↩").fixedSize()
+                        .background { guideExitProbe("guide-step-forward", action: nextStep) }
+                } else {
+                    Button(L10n.tr("Continue"), action: nextStep).keyboardShortcut(.defaultAction).fixedSize()
+                        .background { guideExitProbe("guide-step-forward", action: nextStep) }
+                }
             }
         } else {
-            // Not now (step one) and Set up later keep the choices; Quick setup continues them.
-            if progress.step != .choices {
-                Button(L10n.tr("Set up later"), action: closeSetup).buttonStyle(.link).fixedSize()
-                    .background { guideExitProbe("guide-set-up-later", action: closeSetup) }
-            }
             // A denied microphone still leaves everything but voice input, as its note says.
             if progress.step == .permissions, permissions.status?.microphone.needsSettings == true {
                 Button(L10n.tr("Show Yullo"), action: applyAndOpenTranslator).buttonStyle(.link).fixedSize()
@@ -893,10 +1106,12 @@ struct GuidedSetupDraft: Equatable {
             }
             if progress.step == .choices {
                 Button(L10n.tr("Continue"), action: nextStep).keyboardShortcut(.defaultAction).fixedSize()
+                    .background { guideExitProbe("guide-step-forward", action: nextStep) }
             } else {
                 // Both rows are optional: typing in Yullo works without them, as the step says.
                 Button(L10n.tr("Continue"), action: nextStep).keyboardShortcut(.defaultAction)
                     .disabled(permissions.isRequestingMicrophone).fixedSize()
+                    .background { guideExitProbe("guide-step-forward", action: nextStep) }
             }
         }
     }
@@ -909,28 +1124,45 @@ struct GuidedSetupDraft: Equatable {
 
     private func phaseTitle(_ step: GuidedSetupStep) -> String {
         switch step {
-        case .choices: return L10n.tr("Basics")
-        case .permissions: return L10n.tr("Voice access")
-        case .trial: return L10n.tr("Try it")
+        case .choices: return L10n.tr("Languages")
+        case .translation: return L10n.tr("Translation")
+        case .writing: return L10n.tr("Writing")
+        case .permissions: return L10n.tr("Permissions")
+        case .trial: return L10n.tr("Dictation")
         case .more: return L10n.tr("Shortcuts")
         }
     }
     private var stageTitle: String {
         switch progress.step {
         case .choices: return L10n.tr("Start with your words")
-        case .permissions: return L10n.tr("Enable voice input")
+        case .translation: return L10n.format("Translate into %@", languageName(translationTarget))
+        case .writing: return L10n.tr("Choose how Yullo writes")
+        case .permissions: return L10n.tr("Allow Yullo to listen and type")
         case .trial: return L10n.tr(trialSucceeded ? "Your words are ready" : "Try one sentence")
         case .more: return L10n.tr("Shortcuts")
         }
     }
     private var stageIntroduction: String {
         switch progress.step {
-        case .choices: return ""
+        case .choices, .translation, .writing: return ""
         case .permissions:
             return L10n.tr("Typing in Yullo works without these.")
         case .trial: return ""
         case .more: return L10n.tr("Try each on the sample.")
         }
+    }
+    private func stepWorks(_ step: GuidedSetupStep) -> Bool {
+        switch step {
+        case .choices, .more: return true
+        case .translation: return translationReadiness == .ready
+        case .writing: return writingReadiness == .ready
+        case .permissions: return microphoneAllowed && permissions.status?.accessibility == true
+        case .trial: return !acceptedTrialText.isEmpty
+        }
+    }
+    // Where the Translation step's Try sends the sample, named in its title.
+    private var translationTarget: String {
+        GuidedTourSample.target(reviewedPreferences, ordinaryTarget: plan.targetLanguage)
     }
     private var verificationIssue: String? {
         guard selectedLocalModel != nil, verifiedKey == verificationKey, case .failed(let message) = localVerification
@@ -981,7 +1213,6 @@ struct GuidedSetupDraft: Equatable {
         guard let selected = selectedLocalModel else {
             verifiedKey = expected
             localVerification = .checking
-            resumeForwardIfReady()
             return
         }
         verifiedKey = expected
@@ -992,7 +1223,6 @@ struct GuidedSetupDraft: Equatable {
                 return
             }
             localVerification = .verified
-            resumeForwardIfReady()
         } catch {
             guard !Task.isCancelled, visible, verificationKey == expected, verificationRequest == request else {
                 return
@@ -1000,32 +1230,24 @@ struct GuidedSetupDraft: Equatable {
             localVerification = .failed(error.localizedDescription)
         }
     }
+    // Continue or Skip: the choices apply, and the next step opens. Nothing waits on a
+    // download or a service; each step says what is missing and offers its fix.
     private func nextStep() {
-        if progress.step == .choices {
-            applyIssue = nil
-            _ = progress.beginForward()
-            if selectedLocalModel != nil {
-                Task { @MainActor in await verifySelectedModel() }
-            } else {
-                resumeForwardIfReady()
-            }
-            if !recognitionReady, readiness != .checking, selectedLocalModel == nil { applyIssue = readinessMessage }
-        } else if progress.step == .permissions {
-            // A denied microphone can't try dictation: on to the shortcuts, where
-            // the voice rows say what they need.
-            move(to: permissions.status?.microphone.needsSettings == true ? .more : .trial)
-        }
-    }
-    private func resumeForwardIfReady() {
-        guard visible, recognitionReady, let ticket = progress.forward,
-            progress.accepts(ticket, at: .choices)
-        else { return }
-        guard applyPlan() else {
-            progress.invalidate()
-            return
-        }
+        invalidatePendingActions()
+        applyIssue = nil
+        guard applyPlan() else { return }
+        switch progress.step {
+        case .choices: move(to: .translation)
+        case .translation: move(to: .writing)
         // Voice access is skipped only when both rows are already allowed.
-        move(to: microphoneAllowed && permissions.status?.accessibility == true ? .trial : .permissions)
+        case .writing:
+            move(to: microphoneAllowed && permissions.status?.accessibility == true ? .trial : .permissions)
+        // A denied microphone can't try dictation: on to the shortcuts, where
+        // the voice rows say what they need.
+        case .permissions: move(to: permissions.status?.microphone.needsSettings == true ? .more : .trial)
+        case .trial: move(to: .more)
+        case .more: break
+        }
     }
     // A grant only updates its row. Continue stays the user's choice, so
     // Accessibility can still be enabled after the microphone.
@@ -1037,7 +1259,7 @@ struct GuidedSetupDraft: Equatable {
         // A step's results belong to its visit: the Explore results always,
         // and a trial result once the person goes back before the trial
         // (where its choices can change).
-        if progress.step == .more, step != .more { tourSession.reset() }
+        if step != progress.step { tourSession.reset() }
         if step.rawValue < GuidedSetupStep.trial.rawValue {
             acceptedTrialText = ""
             trialFailure = nil
@@ -1045,6 +1267,8 @@ struct GuidedSetupDraft: Equatable {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { progress.move(to: step) }
         applyIssue = nil
         voiceAccessRevisited = false
+        // Saved as it moves, so Settings closing at once still continues here next time.
+        saveDraft()
     }
     private func revisit(_ step: GuidedSetupStep) {
         guard step.rawValue <= progress.step.rawValue, step != progress.step else { return }
@@ -1077,6 +1301,8 @@ struct GuidedSetupDraft: Equatable {
         applyIssue = nil
     }
     private func applyPlan() -> Bool {
+        // Nothing staged: nothing to save, and the guide moves on.
+        if !useBuiltInMacSetup, reviewedPreferences == model.preferences { return true }
         applyIssue = apply(plan.patch(useBuiltInMacSetup: useBuiltInMacSetup))
         guard applyIssue == nil else { return false }
         plan = GuidedSetupPlan(preferences: model.preferences, targetLanguage: model.ordinaryTranslationTarget)
@@ -1136,7 +1362,8 @@ struct GuidedSetupDraft: Equatable {
         move(to: .more)
     }
     private func tryFeature(_ task: GuidedTourTask) {
-        guard visible, progress.step == .more, let tour, tourSession.running == nil else { return }
+        guard visible, [.translation, .writing, .more].contains(progress.step), let tour, tourSession.running == nil
+        else { return }
         let sample = GuidedTourSample.text, language = GuidedTourSample.language
         switch task {
         case .translate:
@@ -1231,6 +1458,8 @@ struct GuidedSetupDraft: Equatable {
                 title: L10n.format("Use %@", setup.provider.displayName), status: L10n.tr("Not set up")
             ) { useInstalledCLI(setup) }
         }
+        // Not set up: the Writing step sets it up (the tour's Set up… goes back there).
+        if case .needsSetup = writingReadiness { return nil }
         return fix(for: writingReadiness)
     }
     private func useInstalledCLI(_ setup: CLIConfiguration) {
@@ -1282,7 +1511,7 @@ struct GuidedSetupDraft: Equatable {
             microphoneMissing: permissions.status?.microphone.needsSettings == true,
             oneLanguage: model.preferences.usesOneLanguage,
             tryFeature: tryFeature, cancel: tourSession.cancel, showYullo: applyAndOpenTranslator,
-            setUpWriting: { openGuideSettings(.refine, "writing-service", nil) },
+            setUpWriting: { revisit(.writing) },
             enableAccessibility: permissions.accessibilityAction,
             mail: mailApplication,
             emailRule: mailApplication.map { GuidedEmailRule.state(model.preferences, mail: $0) } ?? .available,
@@ -1305,7 +1534,7 @@ struct GuidedSetupDraft: Equatable {
             if case .failed(let message) = speech {
                 tourSession.speechEnded(issue: message)
             } else if speech == .idle, previous != .idle {
-                tourSession.speechEnded(issue: nil)
+                tourSession.speechEnded(issue: nil, note: tour?.speechNote())
             }
         }
     }

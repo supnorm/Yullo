@@ -178,6 +178,23 @@ enum CLISubprocess {
             })
     }
 
+    // A CLI installed by npm, nvm, fnm, volta or bun is often a script that starts
+    // with #!/usr/bin/env node. Apps opened from the Finder don't get the shell's
+    // PATH, so its folder, and the folder its link points into, come first: that is
+    // where those managers keep the node that installed it.
+    static func environmentFindingInterpreter(_ environment: [String: String], executable: URL) -> [String: String] {
+        guard let path = environment["PATH"] else { return environment }
+        var folders: [String] = []
+        for url in [executable, executable.resolvingSymlinksInPath()] {
+            let folder = url.deletingLastPathComponent().path
+            if folder.hasPrefix("/"), !folder.contains(":"), !folders.contains(folder) { folders.append(folder) }
+        }
+        let rest = path.split(separator: ":").map(String.init).filter { !folders.contains($0) }
+        var result = environment
+        result["PATH"] = (folders + rest).joined(separator: ":")
+        return result
+    }
+
     private static func execute(
         executable: URL, arguments: [String], input: Data,
         directory: URL, environment: [String: String], timeout: TimeInterval,
@@ -224,7 +241,8 @@ enum CLISubprocess {
         else { throw CLIError.launchFailed }
 
         let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
-        let envp = environment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        let launchEnvironment = environmentFindingInterpreter(environment, executable: executable)
+        let envp = launchEnvironment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { for pointer in argv + envp { if let pointer { free(pointer) } } }
         guard argv.dropLast().allSatisfy({ $0 != nil }), envp.dropLast().allSatisfy({ $0 != nil }) else {
             throw CLIError.launchFailed

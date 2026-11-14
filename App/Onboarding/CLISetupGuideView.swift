@@ -7,7 +7,9 @@ enum CLISetupCommand: String, CaseIterable, Identifiable {
     var title: String { self == .codex ? "Codex CLI" : "Claude Code" }
     // Fixed public commands only; never interpolate paths, source text, keys
     // or configuration into a shell command, clipboard action or app launch.
-    var command: String { self == .codex ? "codex login" : "claude auth login" }
+    // Codex signs in to a file, the only sign-in Yullo's private Codex home can
+    // use; the same literal as CLIProvider.signInCommand.
+    var command: String { self == .codex ? "codex login -c cli_auth_credentials_store=file" : "claude auth login" }
     // Each maker's own one-line install, as its install page gives it.
     var install: String {
         self == .codex ? "npm install -g @openai/codex" : "curl -fsSL https://claude.ai/install.sh | bash"

@@ -27,15 +27,24 @@ enum GuidedEmailRule: Equatable {
     }
 }
 
+// A Try's result, and when a service other than the chosen one produced it, the words
+// that say so (the same as the Yullo window's), never a silent swap.
+struct GuidedTourReply: Equatable, Sendable {
+    let text: String
+    var note: String? = nil
+}
+
 // The app owner supplies the real task routes; generated checks inject fakes.
 struct GuidedTourActions {
-    var translate: @MainActor (_ text: String, _ source: String, _ target: String) async throws -> String
-    var refine: @MainActor (_ text: String) async throws -> String
+    var translate: @MainActor (_ text: String, _ source: String, _ target: String) async throws -> GuidedTourReply
+    var refine: @MainActor (_ text: String) async throws -> GuidedTourReply
     // Refine in place's first row: the sample rewritten as that row's output.
-    var refineInPlace: @MainActor (_ text: String) async throws -> String = { _ in throw CancellationError() }
+    var refineInPlace: @MainActor (_ text: String) async throws -> GuidedTourReply = { _ in throw CancellationError() }
     var speak: @MainActor (_ text: String, _ language: String) -> Void
     var stopSpeaking: @MainActor () -> Void
     var speech: @MainActor () -> GuidedTourSpeech
+    // A Mac voice read the sample in place of the chosen voice service.
+    var speechNote: @MainActor () -> String? = { nil }
     // Edit with voice on the sample: the spoken change, then the real review window.
     // False when it cannot start now.
     // Replace hands the edited text back for the Sample card.
@@ -45,31 +54,37 @@ struct GuidedTourActions {
 
     // The same routes Translate selected text, Refine selected text and the
     // translator's speaker use, without their editor, History or retry state.
-    @MainActor static func live(_ model: Model) -> GuidedTourActions {
+    // Checks pass their own services with fake engines; the routes stay the same.
+    @MainActor static func live(
+        _ model: Model, translation: TranslationService = .shared, refinement: RefinementService = .shared
+    ) -> GuidedTourActions {
         GuidedTourActions(
             translate: { text, source, target in
                 let settings = TranslationSettings(model.preferences)
                 do {
-                    return try await TranslationService.shared.translate(
-                        text: text, source: source, target: target, settings: settings
-                    ).finished()
+                    let result = try await translation.translate(
+                        text: text, source: source, target: target, settings: settings)
+                    let standIn = result.usedAnyApple && settings.engine != "apple"
+                    return .init(text: try result.finished(), note: standIn ? result.appleFallbackNotice : nil)
                 } catch let failure as TranslationRoute.Failure {
                     throw failure.api
                 }
             },
             refine: { text in
                 let choice = model.selectionWritingChoice
-                return try await RefinementService.shared.refine(
+                let result = try await refinement.refineNoted(
                     text: text, style: choice.style, settings: model.writingSettings(for: choice))
+                return .init(text: result.text, note: result.note)
             },
             refineInPlace: { text in
                 let preferences = model.preferences
-                guard let row = preferences.outputs.refineInPlace.first else { return text }
+                guard let row = preferences.outputs.refineInPlace.first else { return .init(text: text) }
                 let plan = CoreOutputPlan.make(
                     for: row.output, presets: preferences.dictationPresets,
                     defaultStyle: RewriteStyle(rawValue: preferences.voiceRefinementStyle) ?? .light,
                     fallbackLanguage: GuidedTourSample.language)
-                return try await RefineInPlaceController.rewrite(text, plan: plan, preferences: preferences)
+                let result = try await RefineInPlaceController.rewriteNoted(text, plan: plan, preferences: preferences)
+                return .init(text: result.text, note: result.note)
             },
             speak: { model.speakSample($0, language: $1) },
             stopSpeaking: { if model.speechSide == .sample { model.stopSpeaking() } },
@@ -78,7 +93,7 @@ struct GuidedTourActions {
                     return model.sampleSpeechIssue.map(GuidedTourSpeech.failed) ?? .idle
                 }
                 return model.speechAudible ? .playing : .preparing
-            })
+            }, speechNote: { model.sampleSpeechNote })
     }
 }
 
@@ -160,6 +175,8 @@ enum GuidedTourSample {
     @Published private(set) var source: Source?
     @Published private(set) var issue: String?
     @Published private(set) var issueOffersService = false
+    // A stand-in service produced the result (Apple's translation, the backup writer, a Mac voice).
+    @Published private(set) var note: String?
     // The sample as a Try rewrote it in place; a new Try starts from the original.
     @Published private(set) var rewritten: String?
     private var work: Task<Void, Never>?
@@ -168,7 +185,7 @@ enum GuidedTourSample {
 
     func run(
         _ task: GuidedTourTask, caption: String, language: String, source: Source? = nil, inPlace: Bool = false,
-        operation: @escaping @MainActor () async throws -> String
+        operation: @escaping @MainActor () async throws -> GuidedTourReply
     ) {
         cancel()
         let current = ticket
@@ -178,9 +195,11 @@ enum GuidedTourSample {
         self.source = source
         work = Task { @MainActor [weak self] in
             do {
-                let text = try await operation().trimmingCharacters(in: .whitespacesAndNewlines)
+                let reply = try await operation()
+                let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard let self, self.ticket == current, !Task.isCancelled else { return }
                 self.finish()
+                self.note = reply.note
                 if inPlace {
                     self.rewritten = text
                 } else {
@@ -205,11 +224,12 @@ enum GuidedTourSample {
         stopSpeech = stop
         start()
     }
-    func speechEnded(issue: String?) {
+    func speechEnded(issue: String?, note: String? = nil) {
         guard running == .readAloud else { return }
         stopSpeech = nil
         running = nil
         self.issue = issue
+        self.note = issue == nil ? note : nil
     }
     // Edit with voice starts from the original sample; its Replace lands here.
     func beginRewrite() {
@@ -229,6 +249,7 @@ enum GuidedTourSample {
         let stop = stopSpeech
         finish()
         issue = nil
+        note = nil
         stop?()
     }
     // Leaving the step: its results belong to that visit.
@@ -314,8 +335,6 @@ struct GuidedTourStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             sampleCard.id("guide-tour-sample")
-                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { reportFrame?($0) }
-                .onDisappear { reportFrame?(.null) }
             // The keys that matter, each with the key as it is set now.
             GroupBox {
                 SettingsRows {
@@ -325,12 +344,14 @@ struct GuidedTourStep: View {
                         refineInPlaceRow
                         editWithVoiceRow
                         editWithTextRow
+                        writerNeed
                         translateRow
                     } else {
                         translateRow
                         refineInPlaceRow
                         editWithVoiceRow
                         editWithTextRow
+                        writerNeed
                     }
                 }
             }
@@ -389,7 +410,10 @@ struct GuidedTourStep: View {
         #endif
     }
     @ViewBuilder private var refineInPlaceRow: some View {
-        row("Refine in place", caption: "Rewrites selected text where it is. ⌘Z undoes it.", key: refineInPlaceKey) {
+        row(
+            "Refine in place", caption: "Rewrites selected text where it is. ⌘Z undoes it.", key: refineInPlaceKey,
+            keyDimmed: !writingAvailable
+        ) {
             // The Try column keeps its width; without a writer it waits empty.
             if writingAvailable {
                 tryButton(.refineInPlace, title: "Refine in place")
@@ -397,23 +421,22 @@ struct GuidedTourStep: View {
                 Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
             }
         }
-        // The one blocker and its fix, on a line of their own under the row.
+    }
+    // The three rows that need a writer share one line under them, with its one fix.
+    @ViewBuilder private var writerNeed: some View {
         if !writingAvailable {
             HStack(spacing: 12) {
-                Text(L10n.tr("Needs a writing service.")).font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(L10n.tr("These need a writing service.")).font(.system(size: 12)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 writerFix.fixedSize()
-            }.settingsRowAttached()
+            }.settingsRowAttached().accessibilityIdentifier("guide-tour-writer-need")
         }
     }
-    // Without a writer, Refine in place carries the one fix; this row names the need,
-    // with its key dimmed.
+    // Without a writer, Refine in place carries the one fix; this row dims its key.
     private var editWithVoiceRow: some View {
         row(
             "Edit with voice",
-            caption: writingAvailable
-                ? "Select text, press the shortcut, say the change. Replace with ↩."
-                : "Select text, press the shortcut, say the change. Needs a writing service.",
+            caption: "Select text, press the shortcut, say the change. Replace with ↩.",
             key: editWithVoiceKey, keyDimmed: !writingAvailable
         ) {
             // Try says a change for the sample and opens the review window on it.
@@ -428,9 +451,7 @@ struct GuidedTourStep: View {
     private var editWithTextRow: some View {
         row(
             "Edit with text",
-            caption: writingAvailable
-                ? "Select text, press the shortcut, type the change. Replace with ↩."
-                : "Select text, press the shortcut, type the change. Needs a writing service.",
+            caption: "Select text, press the shortcut, type the change. Replace with ↩.",
             key: editWithTextKey, keyDimmed: !writingAvailable
         ) {
             if writingAvailable {
@@ -490,83 +511,8 @@ struct GuidedTourStep: View {
         ) { tryButton(.readAloud, title: "Read aloud") }
     }
 
-    // The Sample card reports where it is, so windows and pills a Try opens sit by it.
-    @Environment(\.guideSampleFrame) private var reportFrame
     private var sampleCard: some View {
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(L10n.tr("Sample")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            // A Try that rewrites in place changes the sample itself, with a soft cross-fade.
-            Text(session.rewritten ?? GuidedTourSample.text).font(.system(size: 14)).lineSpacing(2).textSelection(
-                .enabled
-            )
-            .fixedSize(horizontal: false, vertical: true)
-            .id(session.rewritten ?? GuidedTourSample.text).transition(.opacity)
-            .animation(.easeInOut(duration: 0.25), value: session.rewritten)
-            .accessibilityIdentifier("guide-tour-sample-text")
-            if session.outcome != nil || session.running != nil || session.issue != nil {
-                Divider().padding(.vertical, 3)
-                if let outcome = session.outcome {
-                    Text(outcome.caption).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    // A translation from another language shows that line first; the sample stays as it was.
-                    if let source = session.source {
-                        Text(source.text).font(.system(size: 13)).foregroundStyle(.secondary).lineSpacing(2)
-                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("guide-tour-source")
-                    }
-                    Text(outcome.text).font(.system(size: 14)).lineSpacing(2).textSelection(.enabled)
-                        .foregroundStyle(
-                            session.running == nil || session.running == .readAloud ? .primary : .secondary
-                        )
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("guide-tour-result")
-                }
-                if let running = session.running {
-                    HStack(spacing: 8) {
-                        status(running).frame(maxWidth: .infinity, alignment: .leading)
-                        Button(L10n.tr("Cancel"), action: cancel)
-                            .background {
-                                #if YULLO_TESTING
-                                    YulloActionPresentationProbe(title: "Guide cancel try", action: cancel)
-                                #endif
-                            }
-                    }
-                }
-                if let issue = session.issue {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(issue).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if session.issueOffersService {
-                            Spacer(minLength: 8)
-                            Button(L10n.tr("Choose Another Service…"), action: setUpWriting).font(.system(size: 11))
-                                .fixedSize()
-                                .background {
-                                    #if YULLO_TESTING
-                                        YulloActionPresentationProbe(
-                                            title: "Guide another service", action: setUpWriting)
-                                    #endif
-                                }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
-        .settingsCard()
-    }
-
-    @ViewBuilder private func status(_ task: GuidedTourTask) -> some View {
-        switch task {
-        case .translate: ActivityStatus(title: L10n.tr("Translating…"))
-        case .refine, .refineInPlace: ActivityStatus(title: L10n.tr("Refining…"))
-        // The same word as the review window it opens.
-        case .editWithVoice, .editWithText: ActivityStatus(title: L10n.tr("Editing…"))
-        case .readAloud:
-            if speech == .playing {
-                ActivityStatus(title: L10n.tr("Playing sample"), glyph: .playing, elapsedAfter: nil)
-            } else {
-                ActivityStatus(title: L10n.tr("Preparing sample…"))
-            }
-        }
+        GuideSampleCard(session: session, speech: speech, cancel: cancel, setUpWriting: setUpWriting)
     }
 
     // The mail app's row: Add makes Email what dictation writes there.
@@ -583,10 +529,8 @@ struct GuidedTourStep: View {
 
     @ViewBuilder private var emailDetail: some View {
         switch emailRule {
-        case .needsWritingService:
-            Text(L10n.tr("Available after you set up a writing service.")).font(.system(size: 11))
-                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        case .added, .available:
+        // Refine in place names the missing writer once, with its fix.
+        case .needsWritingService, .added, .available:
             EmptyView()
         }
         if let emailIssue {
@@ -669,6 +613,125 @@ struct GuidedTourStep: View {
                 }
         }
     }
+}
+
+// The guide's sample: the text each Try works on, the step's own Try when it has one,
+// then what the Try is doing, its result or why it could not run.
+struct GuideSampleCard: View {
+    struct TryAction {
+        let title: String
+        let enabled: Bool
+        // Why Try can't run yet, while the step's fix is above it.
+        var help: String? = nil
+        let action: () -> Void
+    }
+    @ObservedObject var session: GuidedTourSession
+    let speech: GuidedTourSpeech
+    let cancel: () -> Void
+    let setUpWriting: () -> Void
+    var tryAction: TryAction? = nil
+
+    // The Sample card reports where it is, so windows and pills a Try opens sit by it.
+    @Environment(\.guideSampleFrame) private var reportFrame
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L10n.tr("Sample")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if let tryAction {
+                    Button(L10n.tr("Try"), action: tryAction.action).disabled(!tryAction.enabled)
+                        .help(tryAction.help ?? "")
+                        .accessibilityLabel(L10n.tr(tryAction.title) + ": " + L10n.tr("Try"))
+                        .accessibilityIdentifier("guide-step-try")
+                        .background {
+                            #if YULLO_TESTING
+                                YulloActionPresentationProbe(
+                                    title: "Guide try " + tryAction.title, action: tryAction.action)
+                            #endif
+                        }
+                }
+            }
+            // A Try that rewrites in place changes the sample itself, with a soft cross-fade.
+            Text(session.rewritten ?? GuidedTourSample.text).font(.system(size: 14)).lineSpacing(2).textSelection(
+                .enabled
+            )
+            .fixedSize(horizontal: false, vertical: true)
+            .id(session.rewritten ?? GuidedTourSample.text).transition(.opacity)
+            .animation(.easeInOut(duration: 0.25), value: session.rewritten)
+            .accessibilityIdentifier("guide-tour-sample-text")
+            if session.outcome != nil || session.running != nil || session.issue != nil || session.note != nil {
+                Divider().padding(.vertical, 3)
+                if let outcome = session.outcome {
+                    Text(outcome.caption).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    // A translation from another language shows that line first; the sample stays as it was.
+                    if let source = session.source {
+                        Text(source.text).font(.system(size: 13)).foregroundStyle(.secondary).lineSpacing(2)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("guide-tour-source")
+                    }
+                    Text(outcome.text).font(.system(size: 14)).lineSpacing(2).textSelection(.enabled)
+                        .foregroundStyle(
+                            session.running == nil || session.running == .readAloud ? .primary : .secondary
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("guide-tour-result")
+                }
+                // Which service stood in, in the same words as the Yullo window.
+                if let note = session.note, session.running == nil {
+                    Label(note, systemImage: "info.circle").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("guide-tour-note")
+                }
+                if let running = session.running {
+                    HStack(spacing: 8) {
+                        status(running).frame(maxWidth: .infinity, alignment: .leading)
+                        Button(L10n.tr("Cancel"), action: cancel)
+                            .background {
+                                #if YULLO_TESTING
+                                    YulloActionPresentationProbe(title: "Guide cancel try", action: cancel)
+                                #endif
+                            }
+                    }
+                }
+                if let issue = session.issue {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(issue).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if session.issueOffersService {
+                            Spacer(minLength: 8)
+                            Button(L10n.tr("Choose Another Service…"), action: setUpWriting).font(.system(size: 11))
+                                .fixedSize()
+                                .background {
+                                    #if YULLO_TESTING
+                                        YulloActionPresentationProbe(
+                                            title: "Guide another service", action: setUpWriting)
+                                    #endif
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+        .settingsCard()
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { reportFrame?($0) }
+        .onDisappear { reportFrame?(.null) }
+    }
+
+    @ViewBuilder private func status(_ task: GuidedTourTask) -> some View {
+        switch task {
+        case .translate: ActivityStatus(title: L10n.tr("Translating…"))
+        case .refine, .refineInPlace: ActivityStatus(title: L10n.tr("Refining…"))
+        // The same word as the review window it opens.
+        case .editWithVoice, .editWithText: ActivityStatus(title: L10n.tr("Editing…"))
+        case .readAloud:
+            if speech == .playing {
+                ActivityStatus(title: L10n.tr("Playing sample"), glyph: .playing, elapsedAfter: nil)
+            } else {
+                ActivityStatus(title: L10n.tr("Preparing sample…"))
+            }
+        }
+    }
+
 }
 
 // A key as it reads on the keyboard: the live shortcut's own label on a quiet cap.

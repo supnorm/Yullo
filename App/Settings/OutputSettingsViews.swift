@@ -773,6 +773,8 @@ struct WriteWithRow: View {
     var needs: String? = nil
     // Opens the Services page at an anchor ("ollama", "api", "cli", "text-services").
     let openServices: (String) -> Void
+    // What writes when Apple's model can't; Settings shows it, the guide leaves it there.
+    var showsFallback = true
     @ObservedObject var installedTools = InstalledCLIs.shared
     @State private var choosing = false
     // Set by a "Choose a writing service…" fix elsewhere: the chooser opens with the row.
@@ -812,7 +814,7 @@ struct WriteWithRow: View {
     var body: some View {
         writer
         // Apple's model can't run everywhere; what writes instead is the person's choice.
-        if draft.voiceRefinementEngine == "apple" { AppleWriterFallbackRow(draft: $draft) }
+        if showsFallback, draft.voiceRefinementEngine == "apple" { AppleWriterFallbackRow(draft: $draft) }
     }
     private var writer: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1029,6 +1031,11 @@ struct WritingServiceChooser: View {
     var effects = WritingServiceSetupEffects.live
     // Checks open the API form already filled: address, model and key.
     var apiPrefill: (url: String, model: String, key: String)? = nil
+    // In the guide: the same rows in its own card, without the sheet's title and Cancel,
+    // only the kinds it lists (nil: all), and none that can never run on this Mac.
+    var inline = false
+    var shown: Set<String>? = nil
+    var opensAPIForm = false
     // Set up here, in place: the API's form opens under its row.
     @State private var apiOpen = false
     @State private var apiURL = ""
@@ -1064,9 +1071,17 @@ struct WritingServiceChooser: View {
     var body: some View {
         let ready = WritingServicePresentation.ready(draft)
         VStack(alignment: .leading, spacing: 14) {
-            Text(L10n.tr("Choose a writing service")).font(.system(size: 17, weight: .semibold))
+            if !inline {
+                Text(L10n.tr("Choose a writing service")).font(.system(size: 17, weight: .semibold))
+            }
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(kinds.filter { $0.engine != "cli" || (cliRows.isEmpty && installed.missing.isEmpty) }) { kind in
+                ForEach(
+                    kinds.filter {
+                        ($0.engine != "cli" || (cliRows.isEmpty && installed.missing.isEmpty))
+                            && (shown?.contains($0.engine) ?? true)
+                            && !(inline && $0.engine == "apple" && !apple.canBecomeReady)
+                    }
+                ) { kind in
                     SettingsTaskRow(
                         title: kind.title,
                         caption: caption(kind.engine, ready: ready)
@@ -1110,7 +1125,7 @@ struct WritingServiceChooser: View {
                 }
                 // Command-line tools in one fixed order, each as it stands: in use or ready,
                 // signed out, or not installed, so no row moves as its state changes.
-                ForEach(InstalledCLIs.order, id: \.self) { provider in
+                ForEach(shown?.contains("cli") ?? true ? InstalledCLIs.order : [], id: \.self) { provider in
                     if let setup = cliRows.first(where: { $0.provider == provider }) {
                         toolRow(setup)
                     } else if installed.missing.contains(provider) {
@@ -1122,14 +1137,16 @@ struct WritingServiceChooser: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }.padding(12).settingsCard()
-            HStack {
-                Spacer()
-                Button(L10n.tr("Cancel")) {
-                    cancelAdd()
-                    close()
-                }.keyboardShortcut(.cancelAction)
+            if !inline {
+                HStack {
+                    Spacer()
+                    Button(L10n.tr("Cancel")) {
+                        cancelAdd()
+                        close()
+                    }.keyboardShortcut(.cancelAction)
+                }
             }
-        }.padding(20).frame(width: 440)
+        }.padding(inline ? 0 : 20).frame(width: inline ? nil : 440)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 refresh += 1
                 // Back from Terminal: an install or a sign-in shows at once.
@@ -1138,6 +1155,7 @@ struct WritingServiceChooser: View {
             }
             .task { await installed.refresh(draft) }
             .onAppear {
+                if opensAPIForm { apiOpen = true }
                 if let apiPrefill {
                     (apiURL, apiModel, apiKey) = apiPrefill
                     apiOpen = true

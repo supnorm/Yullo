@@ -89,17 +89,31 @@ actor RefinementService {
         offline: Bool = Connectivity.shared.isOffline, vocabularyContext: RefinementVocabularyContext? = nil,
         progress: (@Sendable (APITextProgress) -> Void)? = nil
     ) async throws -> String {
+        try await refineNoted(
+            text: text, style: style, settings: settings, offline: offline, vocabularyContext: vocabularyContext,
+            progress: progress
+        ).text
+    }
+    // The text, and when the backup writer wrote it instead of Apple's model, the words
+    // that say so; a result never silently comes from a writer other than the chosen one.
+    func refineNoted(
+        text: String, style: RewriteStyle, settings: TranslationSettings,
+        offline: Bool = Connectivity.shared.isOffline, vocabularyContext: RefinementVocabularyContext? = nil,
+        progress: (@Sendable (APITextProgress) -> Void)? = nil
+    ) async throws -> (text: String, note: String?) {
         do {
-            return try await refineOnce(
+            let text = try await refineOnce(
                 text: text, style: style, settings: settings, offline: offline,
                 vocabularyContext: vocabularyContext, progress: progress)
+            return (text, nil)
         } catch let issue as AppleWriterIssue {
             // The writer the person chose for when Apple's model can't; none says why.
             let fallback = settings.appleWriterFallback
             guard settings.engine == "apple", ["ollama", "api", "cli"].contains(fallback) else { throw issue }
-            return try await refineOnce(
+            let text = try await refineOnce(
                 text: text, style: style, settings: settings.writing(with: fallback), offline: offline,
                 vocabularyContext: vocabularyContext, progress: progress)
+            return (text, BackupWriterNotice.text(settings.writing(with: fallback)))
         }
     }
     private func refineOnce(

@@ -111,14 +111,31 @@ enum QuickSetupModelState: Equatable {
     private let catalog: [LocalModelDescriptor]
     private let hasVoice: (String) -> Bool
     private let hardware: ModelHardwareProfile
+    private let appleSpeechAvailability: @Sendable (String) async -> AppleSpeechAvailability
+    private let appleSpeechDownload: @Sendable (String) async throws -> Void
+    // Apple Speech's language as macOS last reported it, and its download from here.
+    @Published private(set) var appleSpeechState: AppleSpeechAvailability.State?
+    @Published private(set) var appleSpeechDownloading = false
+    // Why the last download from here failed; kept until the person tries again.
+    @Published private(set) var appleSpeechFailure: String?
+    private var appleSpeechTask: Task<Void, Never>?
+    private var appleSpeechLocale: String { VoiceRecognitionSettings(preferences).appleLocale }
     private var preparationRevision = 0
     private var readinessRevision = 0
 
     init(
         preferences: Preferences, models: VoiceModelStore, catalog: [LocalModelDescriptor] = ModelLibrary.catalog,
         hasVoice: @escaping (String) -> Bool = { !MacVoiceCatalog.voices(for: $0).isEmpty },
-        hardware: ModelHardwareProfile? = nil
+        hardware: ModelHardwareProfile? = nil,
+        appleSpeech: @escaping @Sendable (String) async -> AppleSpeechAvailability = {
+            await VoiceResources.appleSpeech.inspect(localeID: $0)
+        },
+        appleSpeechDownload: @escaping @Sendable (String) async throws -> Void = {
+            try await VoiceResources.appleSpeech.downloadAssets(localeID: $0)
+        }
     ) {
+        self.appleSpeechAvailability = appleSpeech
+        self.appleSpeechDownload = appleSpeechDownload
         self.preferences = preferences
         self.models = models
         self.catalog = catalog
@@ -262,7 +279,7 @@ enum QuickSetupModelState: Equatable {
         missingVoiceLanguageIDs = Language.enabled(preferences.enabledLanguages).filter { !hasVoice($0.id) }.map(\.id)
     }
 
-    // Apple Speech needs no download and is always on this Mac.
+    // Apple Speech needs no model download, but its language may need one from macOS.
     static var appleSpeech: QuickSetupModelChoice {
         .init(
             id: VoiceRecognitionSettings.appleModelID, name: L10n.tr("Apple Speech · on device"), sizeBytes: 0,
@@ -366,7 +383,16 @@ enum QuickSetupModelState: Equatable {
         var verified = Set<String>(), errors: [String: String] = [:]
         for choice in plan.models where models.downloads[choice.id] == nil {
             if choice.id == VoiceRecognitionSettings.appleModelID {
-                verified.insert(choice.id)
+                // A new Mac has the language's speech assets only once something asked for them.
+                let state = await appleSpeechAvailability(appleSpeechLocale).state
+                appleSpeechState = state
+                switch state {
+                case .ready: verified.insert(choice.id)
+                // Offered as a download here, like a model.
+                case .needsDownload, .downloading: break
+                case .unsupportedLocale: errors[choice.id] = AppleSpeechError.unsupportedLocale.localizedDescription
+                case .unavailableDevice: errors[choice.id] = AppleSpeechError.unavailable.localizedDescription
+                }
                 continue
             }
             do {
@@ -421,30 +447,45 @@ enum QuickSetupModelState: Equatable {
     }
     var missingModels: [QuickSetupModelChoice] { requiredModels.filter { !verifiedModelIDs.contains($0.id) } }
     var downloadSizeBytes: Int64 { missingModels.reduce(0) { $0 + $1.sizeBytes } }
-    var hasActiveDownloads: Bool { requiredModels.contains { models.downloads[$0.id] != nil } }
+    var hasActiveDownloads: Bool {
+        appleSpeechDownloading || requiredModels.contains { models.downloads[$0.id] != nil }
+    }
+    private var appleSpeechCanDownload: Bool {
+        missingModels.contains { $0.id == VoiceRecognitionSettings.appleModelID } && appleSpeechState == .needsDownload
+            && !appleSpeechDownloading && !checkingModelIDs.contains(VoiceRecognitionSettings.appleModelID)
+    }
     private var ownedDownloadHandles: [LocalModelDownloadHandle] {
         models.activeDownloadHandles(ownedBy: .quickSetup)
     }
-    var hasOwnedActiveDownloads: Bool { !ownedDownloadHandles.isEmpty }
+    var hasOwnedActiveDownloads: Bool { appleSpeechDownloading || !ownedDownloadHandles.isEmpty }
     var canDownload: Bool {
-        missingModels.contains { choice in
-            !checkingModelIDs.contains(choice.id) && models.downloads[choice.id] == nil
-                && catalog.contains(where: { $0.id == choice.id })
-        }
+        appleSpeechCanDownload
+            || missingModels.contains { choice in
+                !checkingModelIDs.contains(choice.id) && models.downloads[choice.id] == nil
+                    && catalog.contains(where: { $0.id == choice.id })
+            }
     }
     var hasFailedDownloads: Bool {
-        missingModels.contains { models.errors[$0.id] != nil || verificationErrors[$0.id] != nil }
+        missingModels.contains { error(for: $0.id) != nil }
     }
     func state(for id: String) -> QuickSetupModelState {
         if let progress = models.downloads[id] { return progress.phase == .downloading ? .downloading : .verifying }
+        if id == VoiceRecognitionSettings.appleModelID, appleSpeechDownloading || appleSpeechState == .downloading {
+            return .downloading
+        }
         if checkingModelIDs.contains(id) { return .verifying }
         if verifiedModelIDs.contains(id) { return .ready }
-        if models.errors[id] != nil || verificationErrors[id] != nil { return .failed }
+        if error(for: id) != nil { return .failed }
         return .downloadNeeded
     }
-    func error(for id: String) -> String? { models.errors[id] ?? verificationErrors[id] }
+    func error(for id: String) -> String? {
+        models.errors[id] ?? verificationErrors[id]
+            ?? (id == VoiceRecognitionSettings.appleModelID && !verifiedModelIDs.contains(id)
+                ? appleSpeechFailure : nil)
+    }
     func downloadMissing() {
         guard checkingModelIDs.isEmpty else { return }
+        if appleSpeechCanDownload { downloadAppleSpeech() }
         for choice in missingModels
         where models.downloads[choice.id] == nil && catalog.contains(where: { $0.id == choice.id }) {
             verificationErrors[choice.id] = nil
@@ -452,6 +493,21 @@ enum QuickSetupModelState: Equatable {
         }
     }
     func cancelDownloads() {
+        appleSpeechTask?.cancel()
         for handle in ownedDownloadHandles { models.cancel(handle) }
+    }
+    // macOS downloads the language's speech assets; the row turns Ready when they are in.
+    private func downloadAppleSpeech() {
+        let locale = appleSpeechLocale, download = appleSpeechDownload
+        appleSpeechFailure = nil
+        appleSpeechDownloading = true
+        appleSpeechTask = Task { @MainActor in
+            do { try await download(locale) } catch is CancellationError {} catch {
+                appleSpeechFailure = error.localizedDescription
+            }
+            appleSpeechDownloading = false
+            appleSpeechTask = nil
+            await refreshReadiness()
+        }
     }
 }

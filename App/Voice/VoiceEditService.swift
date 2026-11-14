@@ -87,14 +87,24 @@ actor VoiceEditService {
         source: String, instruction: String, settings: TranslationSettings,
         offline: Bool = Connectivity.shared.isOffline
     ) async throws -> String {
+        try await editNoted(source: source, instruction: instruction, settings: settings, offline: offline).text
+    }
+    // The edit, and when the backup writer made it instead of Apple's model, the words that say so.
+    func editNoted(
+        source: String, instruction: String, settings: TranslationSettings,
+        offline: Bool = Connectivity.shared.isOffline
+    ) async throws -> (text: String, note: String?) {
         do {
-            return try await editOnce(source: source, instruction: instruction, settings: settings, offline: offline)
+            return (
+                try await editOnce(source: source, instruction: instruction, settings: settings, offline: offline), nil
+            )
         } catch let issue as AppleWriterIssue {
-            // What Apple's model can't do, the writer chosen for that case does.
+            // What Apple's model can't do, the writer chosen for that case does, and says so.
             let fallback = settings.appleWriterFallback
             guard settings.engine == "apple", ["ollama", "api", "cli"].contains(fallback) else { throw issue }
-            return try await editOnce(
+            let text = try await editOnce(
                 source: source, instruction: instruction, settings: settings.writing(with: fallback), offline: offline)
+            return (text, BackupWriterNotice.text(settings.writing(with: fallback)))
         }
     }
     private func editOnce(

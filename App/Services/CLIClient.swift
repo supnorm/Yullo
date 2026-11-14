@@ -5,6 +5,18 @@ import CoreFoundation
 enum CLIProvider: String, CaseIterable, Codable, Sendable {
     case codex, claude
     var displayName: String { self == .codex ? "Codex CLI" : "Claude Code" }
+    // Yullo runs Codex in a private home that reads its sign-in from a file, so
+    // signing in for Yullo asks for a file even where Codex is set to the Keychain.
+    // The command that updates this install, by where it was found: Claude Code updates any
+    // install itself; Codex through Homebrew or npm when it came from there.
+    func updateCommand(executable: String) -> String {
+        guard self == .codex else { return "claude update" }
+        let path = URL(fileURLWithPath: executable).resolvingSymlinksInPath().path
+        if path.contains("/Cellar/") || path.contains("/Caskroom/") { return "brew upgrade codex" }
+        if path.contains("/node_modules/@openai/codex/") { return "npm install -g @openai/codex@latest" }
+        return "codex update"
+    }
+    var signInCommand: String { self == .codex ? "codex login -c \(CLIClient.codexFileSignIn)" : "claude" }
     var suggestedExecutablePath: String {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/\(rawValue)").path
     }
@@ -62,7 +74,9 @@ struct CLILocalDiscovery: Sendable {
 }
 
 enum CLIError: Error, LocalizedError, Equatable, Sendable {
-    case invalidExecutable, unavailable, unsupportedVersion, contextUnavailable, globalInstructions
+    case invalidExecutable, unavailable, contextUnavailable, codexSignInFileMissing
+    // Too old, or missing a flag Yullo needs to keep personal context out.
+    case unsupportedVersion(CLIProvider, update: String)
     case invalidModel, missingModel, launchFailed, timedOut, outputTooLarge, executionFailed
     case invalidResponse, emptyResponse, inputTooLarge
     // What the CLI itself reported, named for the tool. Only the reset time is
@@ -85,10 +99,16 @@ enum CLIError: Error, LocalizedError, Equatable, Sendable {
         case .signedOut(let provider):
             return L10n.format(
                 "%1$@ isn’t signed in. Run %2$@ in Terminal to sign in.", provider.displayName,
-                provider == .claude ? "claude" : "codex login")
+                provider.signInCommand)
         case .modelUnavailable(let provider):
             return L10n.format(
                 "This model isn’t available to your %@ account. Choose another model.", provider.displayName)
+        case .unsupportedVersion(let provider, let update):
+            return L10n.format("Update %1$@ to use it with Yullo: run %2$@ in Terminal.", provider.displayName, update)
+        case .codexSignInFileMissing:
+            return L10n.format(
+                "Yullo can’t find Codex CLI’s sign-in file. Run %@ in Terminal to sign in.",
+                CLIProvider.codex.signInCommand)
         default: return L10n.tr(messageKey)
         }
     }
@@ -103,14 +123,11 @@ enum CLIError: Error, LocalizedError, Equatable, Sendable {
     }
     var messageKey: String {
         switch self {
-        case .usageLimit, .signedOut, .modelUnavailable: return ""
+        case .usageLimit, .signedOut, .modelUnavailable, .codexSignInFileMissing, .unsupportedVersion: return ""
         case .invalidExecutable: return "Choose the installed CLI executable using its full path."
         case .unavailable: return "The CLI executable isn’t at this path."
-        case .unsupportedVersion: return "Update this CLI to a version that supports isolated translation."
         case .contextUnavailable:
             return "The CLI’s personal context couldn’t be isolated. Use another translation connection."
-        case .globalInstructions:
-            return "Codex CLI loads personal instructions from AGENTS.md. Choose another translation connection."
         case .invalidModel: return "Enter a model name without spaces or command options."
         case .missingModel: return "Enter the exact model ID to use with Codex CLI."
         case .launchFailed: return "The CLI couldn’t start. Check its installation and permissions."
@@ -149,7 +166,12 @@ actor CLIClient {
         defer { request.finish() }
         guard let directory = try? Self.makeDirectory() else { return nil }
         defer { try? FileManager.default.removeItem(at: directory) }
-        let environment = Self.environment(directory: directory)
+        // Codex is asked about the same private home a request runs in, so a
+        // sign-in Yullo can't use doesn't read as signed in.
+        let codexHome = configuration.provider == .codex ? try? CodexSignInHome.make() : nil
+        defer { codexHome?.finish() }
+        if configuration.provider == .codex && codexHome?.signedIn != true { return false }
+        let environment = Self.environment(directory: directory, codexHome: codexHome?.url)
         let command = configuration.provider == .codex ? "login" : "auth"
         guard
             let help = try? await CLISubprocess.run(
@@ -160,7 +182,10 @@ actor CLIClient {
         else { return nil }
         guard
             let status = try? await CLISubprocess.run(
-                executable: executable, arguments: [command, "status"], directory: directory,
+                executable: executable,
+                arguments: configuration.provider == .codex
+                    ? [command, "--config", Self.codexFileSignIn, "status"] : [command, "status"],
+                directory: directory,
                 environment: environment, timeout: 5, stdoutLimit: 16_384, stderrLimit: 16_384)
         else { return nil }
         if status.status == 0 { return true }
@@ -201,14 +226,14 @@ actor CLIClient {
                 environment: environment, timeout: 5, stdoutLimit: 4096, stderrLimit: 4096)
             guard versionResult.status == 0, let versionText = String(data: versionResult.stdout, encoding: .utf8),
                 let version = Self.version(versionText, provider: configuration.provider)
-            else { throw CLIError.unsupportedVersion }
+            else { throw Self.outdated(configuration) }
             let helpResult = try await CLISubprocess.run(
                 executable: executable,
                 arguments: configuration.provider == .codex ? ["exec", "--help"] : ["--help"], directory: directory,
                 environment: environment, timeout: 5, stdoutLimit: 131_072, stderrLimit: 4096)
             guard helpResult.status == 0, let help = String(data: helpResult.stdout, encoding: .utf8),
                 Self.hasRequiredCapabilities(help, provider: configuration.provider, version: version)
-            else { throw CLIError.unsupportedVersion }
+            else { throw Self.outdated(configuration) }
             if let issue = Self.contextIssue(provider: configuration.provider) {
                 return CLIInspection(provider: configuration.provider, version: version, supported: false, issue: issue)
             }
@@ -342,12 +367,17 @@ actor CLIClient {
         if configuration.provider == .codex && model.isEmpty { throw CLIError.missingModel }
         let inspection = await inspect(configuration: configuration)
         try Task.checkCancellation()
-        guard inspection.supported else { throw inspection.issue ?? CLIError.unsupportedVersion }
+        guard inspection.supported else {
+            throw inspection.issue ?? Self.outdated(configuration)
+        }
         if let issue = Self.contextIssue(provider: configuration.provider) { throw issue }
         let request = try CLISubprocess.beginRequest()
         defer { request.finish() }
         let directory = try Self.makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
+        let codexHome = configuration.provider == .codex ? try CodexSignInHome.make() : nil
+        defer { codexHome?.finish() }
+        if let codexHome, !codexHome.signedIn { throw CLIError.codexSignInFileMissing }
         let lowEffort =
             configuration.preferLowEffort && inspection.supportsLowEffort
             && Self.supportsLowEffort(provider: configuration.provider, model: model)
@@ -360,7 +390,7 @@ actor CLIClient {
         let result = try await CLISubprocess.run(
             executable: Self.executable(configuration.executablePath),
             arguments: invocation.arguments, input: invocation.input, directory: directory,
-            environment: Self.environment(directory: directory), timeout: timeout,
+            environment: Self.environment(directory: directory, codexHome: codexHome?.url), timeout: timeout,
             stdoutLimit: outputLimit, stderrLimit: stderrLimit,
             completedOutput: completion)
         try Task.checkCancellation()
@@ -374,6 +404,12 @@ actor CLIClient {
         let output = try Self.parse(result.stdout, provider: configuration.provider)
         try Task.checkCancellation()
         return output
+    }
+
+    static func outdated(_ configuration: CLIConfiguration) -> CLIError {
+        .unsupportedVersion(
+            configuration.provider,
+            update: configuration.provider.updateCommand(executable: configuration.executablePath))
     }
 
     // Metadata only. Readiness must not inspect files, launch the CLI or
@@ -414,10 +450,7 @@ actor CLIClient {
     ) -> [String] {
         let directories =
             override
-            ?? [
-                home.appendingPathComponent(".local/bin").path, "/opt/homebrew/bin", "/usr/local/bin",
-                home.appendingPathComponent(".npm-global/bin").path, "/opt/local/bin"
-            ]
+            ?? installDirectories(home: home)
             + (searchPath ?? "").split(separator: ":", omittingEmptySubsequences: true).prefix(24).map(String.init)
         let candidates =
             [preferred]
@@ -432,6 +465,28 @@ actor CLIClient {
         }
     }
 
+    // Where the official installers, Homebrew, npm and the common Node version
+    // managers put a global command. An app opened from the Finder doesn't get the
+    // shell's PATH, so these are looked at directly; nothing here runs a shell.
+    static func installDirectories(home: URL) -> [String] {
+        func inHome(_ path: String) -> String { home.appendingPathComponent(path).path }
+        // Newest Node first: a global install lives in the version that was active.
+        func versions(_ root: String, bin: String) -> [String] {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: inHome(root))) ?? []
+            return names.filter { $0.first?.isNumber == true || $0.hasPrefix("v") }
+                .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+                .prefix(8).map { inHome("\(root)/\($0)/\(bin)") }
+        }
+        return [inHome(".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", inHome(".npm-global/bin")]
+            + versions(".nvm/versions/node", bin: "bin")
+            + versions(".local/share/fnm/node-versions", bin: "installation/bin")
+            + versions("Library/Application Support/fnm/node-versions", bin: "installation/bin")
+            + [
+                inHome(".volta/bin"), inHome(".bun/bin"), inHome("Library/pnpm"), inHome(".asdf/shims"),
+                inHome(".local/share/mise/shims"), inHome(".yarn/bin"), inHome(".claude/local"), "/opt/local/bin"
+            ]
+    }
+
     static func modelCatalog(provider: CLIProvider, cacheURL: URL? = nil) -> CLIModelCatalog {
         if provider == .claude {
             return CLIModelCatalog(
@@ -442,12 +497,7 @@ actor CLIClient {
                     CLIModelOption(id: "opus", supportsLowEffort: true, recommended: false)
                 ])
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let codexHome =
-            ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
-                $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil
-            }
-            ?? home.appendingPathComponent(".codex")
+        let codexHome = userCodexHome()
         guard let data = try? boundedModelMetadata(cacheURL ?? codexHome.appendingPathComponent("models_cache.json")),
             let models = try? codexModels(data)
         else { return CLIModelCatalog(provider: provider, source: .manual, models: []) }
@@ -611,7 +661,7 @@ actor CLIClient {
             arguments = [
                 "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config",
                 "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never",
-                "--cd", directory.path,
+                "--cd", directory.path, "--config", codexFileSignIn,
                 "--output-schema", schemaURL.path, "--config",
                 "model_instructions_file=\(tomlString(instructionURL.path))",
                 "--config", "model_catalog_json=\(tomlString(catalogURL.path))",
@@ -826,7 +876,7 @@ actor CLIClient {
         return date > now.addingTimeInterval(-60) && date < now.addingTimeInterval(8 * 86_400) ? date : nil
     }
 
-    static func environment(directory: URL) -> [String: String] {
+    static func environment(directory: URL, codexHome: URL? = nil) -> [String: String] {
         // Preserve the real HOME for the CLI's own authentication. Never copy
         // credentials, read auth files, or inherit arbitrary API/agent variables.
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -846,8 +896,21 @@ actor CLIClient {
                 result[key] = value
             }
         }
+        if let codexHome { result["CODEX_HOME"] = codexHome.path }
         return result
     }
+
+    // Codex keeps its sign-in, settings and personal instructions in one home,
+    // and loads AGENTS.md from it on every run whatever the flags say. Never
+    // read here; requests run in a private copy that links only the sign-in.
+    static func userCodexHome() -> URL {
+        ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
+            $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil
+        } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    }
+    // The private home holds a sign-in file only, so Codex is told to use it
+    // rather than look up a Keychain entry named after its usual home.
+    static let codexFileSignIn = "cli_auth_credentials_store=file"
 
     static func makeDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -859,32 +922,17 @@ actor CLIClient {
         return directory
     }
 
-    // Metadata-only guard. Plain exec 0.155 creates the same in-process runtime
-    // that unconditionally installs CodexHomeUserInstructionsProvider: global
-    // AGENTS are independent of project_doc_max_bytes/ignore-user-config.
-    // Never read, rename or temporarily hide the user's instruction files.
+    // Metadata-only guard for system-managed policy, which no private home can
+    // turn off. Personal AGENTS.md is kept out by CodexSignInHome and Claude's
+    // CLAUDE.md by --safe-mode. Never read, rename or hide the user's files.
     static func contextIssue(
-        provider: CLIProvider, globalPaths: [URL]? = nil,
-        policyPaths: [URL]? = nil, checkManagedPreferences: Bool = true
+        provider: CLIProvider, policyPaths: [URL]? = nil, checkManagedPreferences: Bool = true
     ) -> CLIError? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let codexHome =
-            ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
-                $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil
-            }
-            ?? home.appendingPathComponent(".codex", isDirectory: true)
         let claudeHome =
             ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].flatMap {
                 $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil
             }
-            ?? home.appendingPathComponent(".claude", isDirectory: true)
-        let global =
-            globalPaths
-            ?? (provider == .codex
-                ? [
-                    codexHome.appendingPathComponent("AGENTS.override.md"),
-                    codexHome.appendingPathComponent("AGENTS.md")
-                ] : [])
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude", isDirectory: true)
         let policies =
             policyPaths
             ?? (provider == .codex
@@ -907,9 +955,6 @@ actor CLIClient {
             return stat(path.path, &metadata) == 0 && metadata.st_mode & S_IFMT == S_IFREG && metadata.st_size == 0
         }
         do {
-            for path in global where try exists(path) {
-                if !emptyRegularFile(path) { return .globalInstructions }
-            }
             for path in policies where try exists(path) {
                 if provider == .codex {
                     if !emptyRegularFile(path) { return .contextUnavailable }
@@ -1019,11 +1064,7 @@ actor CLIClient {
     static func disabledSkillDocuments(roots customRoots: [URL]? = nil) throws -> [String] {
         let manager = FileManager.default
         let home = manager.homeDirectoryForCurrentUser
-        let codexHome =
-            ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
-                $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil
-            }
-            ?? home.appendingPathComponent(".codex", isDirectory: true)
+        let codexHome = userCodexHome()
         let roots =
             customRoots ?? [
                 codexHome.appendingPathComponent("skills", isDirectory: true),
@@ -1069,5 +1110,62 @@ actor CLIClient {
     }
     private static func tomlString(_ string: String) -> String {
         "\"" + string.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+}
+
+// One request's private CODEX_HOME. It holds a link to the user's sign-in file
+// and nothing else, so personal AGENTS.md, config, skills and history stay out.
+// When Codex refreshes the sign-in it replaces the link with a new file; that
+// file is moved back over the user's own, since the old refresh token is spent.
+struct CodexSignInHome {
+    let url: URL
+    private let signIn: URL?
+    private let identity: Identity?
+    var signedIn: Bool { signIn != nil }
+
+    private struct Identity: Equatable {
+        let device: dev_t, inode: ino_t, size: off_t, seconds: Int, nanoseconds: Int
+        init?(_ url: URL) {
+            var metadata = stat()
+            guard stat(url.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else { return nil }
+            device = metadata.st_dev
+            inode = metadata.st_ino
+            size = metadata.st_size
+            seconds = metadata.st_mtimespec.tv_sec
+            nanoseconds = metadata.st_mtimespec.tv_nsec
+        }
+    }
+
+    static func make(userHome: URL = CLIClient.userCodexHome()) throws -> CodexSignInHome {
+        let url = try CLIClient.makeDirectory()
+        let file = userHome.appendingPathComponent("auth.json").resolvingSymlinksInPath()
+        guard let identity = Identity(file) else { return CodexSignInHome(url: url, signIn: nil, identity: nil) }
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: url.appendingPathComponent("auth.json"), withDestinationURL: file)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw CLIError.launchFailed
+        }
+        return CodexSignInHome(url: url, signIn: file, identity: identity)
+    }
+
+    func finish() {
+        defer { try? FileManager.default.removeItem(at: url) }
+        let copy = url.appendingPathComponent("auth.json")
+        var metadata = stat()
+        // Still the link: nothing was refreshed, or Codex wrote through it.
+        guard let signIn, let identity, lstat(copy.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG
+        else { return }
+        // The user's own Codex changed its file meanwhile; theirs is newer.
+        guard Identity(signIn) == identity else { return }
+        let staging = signIn.deletingLastPathComponent().appendingPathComponent(".auth.json.yullo-\(UUID().uuidString)")
+        do {
+            try FileManager.default.copyItem(at: copy, to: staging)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staging.path)
+            guard rename(staging.path, signIn.path) == 0 else { throw CLIError.launchFailed }
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+        }
     }
 }

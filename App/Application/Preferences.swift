@@ -563,6 +563,8 @@ struct Preferences: Codable, Equatable {
     // to global keys already saved, as on a normal load.
     private static func fresh(_ defaults: UserDefaults) -> Preferences {
         var value = Preferences()
+        // A new install speaks the Mac's language; settings saved before keep theirs.
+        value.interfaceLanguage = "system"
         let taken = value.savedBindings(globalShortcuts(defaults))
         if taken.contains(where: { $0.conflicts(value.refineSelectionShortcut) }) {
             value.refineSelectionShortcut = .unassigned

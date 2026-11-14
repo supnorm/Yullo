@@ -1,8 +1,10 @@
 import Foundation
 
-// `more` follows the dictation trial, which can be skipped to reach it.
+// One step per task, each ending in a Try: languages, then translation and
+// writing set up in place, then the permissions dictation needs and its trial,
+// then the shortcuts. Every step can be skipped.
 enum GuidedSetupStep: Int, CaseIterable {
-    case choices, permissions, trial, more
+    case choices, translation, writing, permissions, trial, more
 }
 
 // Only an explicit forward action owns an automatic continuation. Navigation
@@ -76,6 +78,11 @@ struct GuidedSetupPlan: Equatable {
     var writingEngine: String
     // The command-line tool both can use, when one is chosen here by name.
     var cli: CLIConfiguration
+    // A writer set up in the guide brings its connection: the API's address and
+    // model, or the Ollama model.
+    var endpoint: String
+    var apiModel: String
+    var ollamaModel: String
     var recognitionModelID: String
     var recognitionLanguage: String
     var appleLocale: String
@@ -88,6 +95,9 @@ struct GuidedSetupPlan: Equatable {
     private let initialTranslationModel: String
     private let initialWriting: String
     private let initialCLI: CLIConfiguration
+    private let initialEndpoint: String
+    private let initialAPIModel: String
+    private let initialOllamaModel: String
     private let initialRecognition: String
     private let initialRecognitionLanguage: String
     private let initialAppleLocale: String
@@ -105,6 +115,12 @@ struct GuidedSetupPlan: Equatable {
         initialWriting = preferences.voiceRefinementEngine
         cli = preferences.cli
         initialCLI = preferences.cli
+        endpoint = preferences.endpoint
+        initialEndpoint = preferences.endpoint
+        apiModel = preferences.model
+        initialAPIModel = preferences.model
+        ollamaModel = preferences.ollamaModel
+        initialOllamaModel = preferences.ollamaModel
         recognitionModelID = preferences.voiceModelID
         recognitionLanguage = preferences.voiceRecognitionLanguage
         appleLocale = preferences.voiceAppleLocale
@@ -129,6 +145,9 @@ struct GuidedSetupPlan: Equatable {
     mutating func stageWriter(_ preferences: Preferences) {
         writingEngine = preferences.voiceRefinementEngine
         cli = preferences.cli
+        endpoint = preferences.endpoint
+        apiModel = preferences.model
+        ollamaModel = preferences.ollamaModel
     }
     var spokenLanguage: String { languages[0] }
     var otherLanguages: [String] { Array(languages.dropFirst()) }
@@ -173,6 +192,9 @@ struct GuidedSetupPlan: Equatable {
             translationModelID: translationModelID == initialTranslationModel ? nil : translationModelID,
             writingEngine: writingEngine == initialWriting ? nil : writingEngine,
             cli: cli == initialCLI ? nil : cli,
+            endpoint: endpoint == initialEndpoint ? nil : endpoint,
+            apiModel: apiModel == initialAPIModel ? nil : apiModel,
+            ollamaModel: ollamaModel == initialOllamaModel ? nil : ollamaModel,
             languages: languages == initialLanguages ? nil : languages)
     }
 }
@@ -197,6 +219,9 @@ struct GuidedSetupPatch: Equatable {
     var translationModelID: String? = nil
     var writingEngine: String? = nil
     var cli: CLIConfiguration? = nil
+    var endpoint: String? = nil
+    var apiModel: String? = nil
+    var ollamaModel: String? = nil
     var languages: [String]? = nil
 
     func applying(to current: Preferences) -> Preferences {
@@ -225,6 +250,9 @@ struct GuidedSetupPatch: Equatable {
         if let translationModelID { updated.localTranslationModelID = translationModelID }
         if let writingEngine { updated.voiceRefinementEngine = writingEngine }
         if let cli { updated.cli = cli }
+        if let endpoint { updated.endpoint = endpoint }
+        if let apiModel { updated.model = apiModel }
+        if let ollamaModel { updated.ollamaModel = ollamaModel }
         if let languages, !languages.isEmpty {
             updated.enabledLanguages = languages
             if !languages.contains(updated.voiceTarget) {
@@ -299,5 +327,63 @@ enum GuideTryPlacement {
     static func card(reported: CGRect?, guide: CGRect) -> CGRect {
         if let reported, !reported.isNull, !reported.isEmpty, guide.intersects(reported) { return reported }
         return CGRect(x: guide.minX + 200, y: guide.maxY - 250, width: max(guide.width - 230, 120), height: 100)
+    }
+}
+
+// The translation model the guide offers: the reviewed model for these languages that
+// fits this Mac's memory. Free space is judged on its own, so a full disk shows its
+// reason beside the model rather than hiding it.
+enum GuidedTranslationOffer {
+    static func model(languages: [String], hardware: ModelHardwareProfile?) -> LocalModelDescriptor? {
+        let catalog = ModelLibrary.catalog.filter { $0.task == .translation }
+        var id = Preferences().localTranslationModelID
+        if let hardware {
+            let anyDisk = ModelHardwareProfile(
+                physicalMemoryBytes: hardware.physicalMemoryBytes, availableDiskBytes: nil,
+                architecture: hardware.architecture, availableRuntimes: hardware.availableRuntimes,
+                liveRecognitionAvailable: hardware.liveRecognitionAvailable,
+                unavailableModelIDs: hardware.unavailableModelIDs)
+            if let pick = HardwareModelRecommendation.recommend(
+                needs: .init(task: .translation, languageIDs: languages), profile: anyDisk,
+                candidates: ModelDiscoveryCatalog.hardwareCatalog)?.modelID
+            {
+                id = pick
+            }
+        }
+        return catalog.first { $0.id == id } ?? catalog.first
+    }
+    // The download is staged beside its final copy, with room to spare: the library's own rule.
+    static func hasRoom(_ model: LocalModelDescriptor, hardware: ModelHardwareProfile?) -> Bool {
+        guard let disk = hardware?.availableDiskBytes else { return true }
+        let (staging, overflow) = UInt64(max(0, model.sizeBytes)).multipliedReportingOverflow(by: 2)
+        return !overflow && staging + 256 * 1_048_576 <= disk
+    }
+}
+
+// The writer the guide recommends on this Mac: Apple's model where it runs here, else, where
+// Yullo may work online, a command-line tool installed and not known to be signed out. Nil: the
+// guide leads with the service that fits Where Yullo works (Ollama on this Mac only, else an API).
+enum GuidedWriterRecommendation: Equatable {
+    case apple, cli(CLIConfiguration)
+
+    static func make(
+        apple: CoreAppleWriterAvailability, installed: [CLIConfiguration], signedIn: [CLIProvider: Bool] = [:],
+        onDeviceOnly: Bool = false
+    ) -> Self? {
+        if apple == .available { return .apple }
+        guard !onDeviceOnly else { return nil }
+        return installed.first { signedIn[$0.provider] != false }.map(Self.cli)
+    }
+    var title: String {
+        switch self {
+        case .apple: return L10n.tr("Apple Foundation Model")
+        case .cli(let setup): return setup.provider.displayName
+        }
+    }
+    var caption: String {
+        switch self {
+        case .apple: return L10n.tr("Runs on this Mac")
+        case .cli: return L10n.tr("Command-line tool")
+        }
     }
 }

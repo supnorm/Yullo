@@ -207,6 +207,11 @@ struct SettingsView: View {
     // One silent check of the saved API key for every engine row on every page.
     @StateObject private var textKeyAccess = CredentialAccessController(backend: GuidedSetupView.keyBackend)
     @State private var speechConnectionProvider: SpeechProvider?
+    // Ollama's editor opened by a link to its row (its own Set up… keeps the rest).
+    @State private var ollamaRequest = UUID()
+    @State private var ollamaRequested = false
+    // Allow access pressed where a task stopped for this key; its key line goes on to ask macOS.
+    @State private var keyAllowRequest: CredentialAccessService?
     @State private var testTask: Task<Void, Never>?
     @State private var showCLIGuide = false
     @State private var showThirdPartyNotices = false
@@ -254,7 +259,8 @@ struct SettingsView: View {
         self.credentialCommitter = credentialCommitter ?? SettingsCredentialCommitter()
         self.initialAnchor = initialAnchor
         self.requestedInitialPage = initialPage
-        _guidedDraft = State(initialValue: GuidedSetupResume.draft)
+        _guidedDraft = State(
+            initialValue: GuidedSetupResume.restored(model.preferences, target: model.ordinaryTranslationTarget))
         _draft = State(initialValue: model.preferences)
         _appliedConfiguration = State(initialValue: model.preferences)
         _first = State(initialValue: model.openKey)
@@ -294,6 +300,7 @@ struct SettingsView: View {
             }
             // A key saved in the setup sheet is checked again, without a prompt, as the sheet closes.
             .onChange(of: connectionSheet) { _, sheet in
+                syncEngineKeyCheck()
                 if sheet == nil, textKeyAccess.canCheck { textKeyAccess.check(.textAPI) }
             }
             .sheet(isPresented: $showCLIGuide) { cliGuide.glassSheet() }
@@ -480,7 +487,7 @@ struct SettingsView: View {
                                     }
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8).id("top")
                                     .smallNativeScrollbars()
-                                    .environment(\.openSavedKeyAccess) { navigate(to: .setup, anchor: "keychain") }
+                                    .environment(\.openSavedKeyAccess, openSpeechKeyAccess)
                             }
                             // The scroller takes the page margin, so cards keep their edge.
                             .settingsScrollGutter().padding(.trailing, -NativeScrollGutter.width)
@@ -577,10 +584,12 @@ struct SettingsView: View {
                 commitCoordinator.commitDraft = { commitEdits() }
                 commitCoordinator.focusSearch = { searchFocused = true }
                 if firstAppearance {
+                    openKeyAnchor(initialAnchor)
                     let anchor = resolvedAnchor(initialAnchor)
                     reveal(anchor)
                     navigationTarget = anchor
-                    if anchor == "experience-setup" { openGuide(resuming: false, fromSettings: false) }
+                    // Welcome and the menu's Setup Guide… continue a guide left earlier at its step.
+                    if anchor == "experience-setup" { openGuide(resuming: true, fromSettings: false) }
                     // Opened plainly, Settings is ready to search: type a setting's name and ↩.
                     // Not when it opens at a row, or hosts the guide.
                     if initialAnchor == nil, !guidePresented {
@@ -974,6 +983,7 @@ struct SettingsView: View {
                     Button(L10n.tr("Forget saved key…")) { confirmForgetKey = true }.buttonStyle(.link)
                         .disabled(draft.endpoint.isEmpty || testing)
                 }.font(.system(size: 12))
+                SavedKeyAccessLine(access: textKeyAccess, service: .textAPI, allowRequest: $keyAllowRequest)
             }
             VStack(alignment: .leading, spacing: 4) {
                 // A service known not to stream keeps the switch off until its endpoint or model changes.
@@ -1718,9 +1728,10 @@ struct SettingsView: View {
             connectionSheet = sheet
         }
     }
-    // Only pages with engine rows read the saved key; Quick setup and the guide own their own reads.
+    // Only pages with engine rows or the API's key field read the saved key;
+    // Quick setup and the guide own their own reads.
     private func syncEngineKeyCheck() {
-        if [.translation, .refine, .dictation].contains(page) && !guidePresented {
+        if ([.translation, .refine, .dictation, .models].contains(page) || connectionSheet == .api) && !guidePresented {
             textKeyAccess.appear(targets: CredentialAccessTargets.make(draft), inspecting: [.textAPI])
         } else {
             textKeyAccess.disappear()
@@ -1945,7 +1956,9 @@ struct SettingsView: View {
                     }.id("models").task { await voiceModels.refresh() }
                     AppleModelServiceRow().id("apple-model")
                     // An extra option beside the models on this Mac, never in their place.
-                    OllamaSettingsView(host: $draft.ollamaHost, model: $draft.ollamaModel).id("ollama")
+                    OllamaSettingsView(
+                        host: $draft.ollamaHost, model: $draft.ollamaModel, startsEditing: ollamaRequested
+                    ).id(ollamaRequest).id("ollama")
                     connectionRow(
                         .api, title: L10n.tr("API connection"),
                         status: apiConfigured ? Self.apiModelConfigurationSummary(draft.model) : L10n.tr("Not set up"),
@@ -1960,8 +1973,13 @@ struct SettingsView: View {
                 }
             }
             if draft.processingPolicy == .onDeviceOnly {
-                Text(L10n.tr("Works on this Mac only. Choosing a service allows online."))
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Text(L10n.tr("Works on this Mac only"))
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button(L10n.tr("Allow online")) { processingSelection.wrappedValue = .standard }
+                        .buttonStyle(.link).accessibilityIdentifier("services-allow-online")
+                }.font(.system(size: 11)).accessibilityElement(children: .contain)
                     .accessibilityIdentifier("services-on-this-mac-only")
             }
             SettingsSection(L10n.tr("Cloud voices")) {
@@ -2031,6 +2049,7 @@ struct SettingsView: View {
                     draft: $draft, enteredKeys: $speechKeys, voiceLanguage: $voiceLanguage,
                     stopCurrentSpeech: { model.stopSpeaking() }, voiceInputActive: voiceInput.isBusy,
                     commitCredentials: { commitCoordinator.commit() },
+                    keyAllowRequest: $keyAllowRequest,
                     credentialForgotten: { credentialCommitter.forget(account: $0) },
                     session: speechConnectionSession,
                     isExpanded: connectionExpansion(.speech), voicesExpanded: customizationExpansion(.speechVoices),
@@ -2039,19 +2058,28 @@ struct SettingsView: View {
             }
         }
     }
+    // Read aloud's voice list stopped for the chosen service's key: allow it where the key is.
+    private var openSpeechKeyAccess: (@MainActor () -> Void)? {
+        guard let provider = SpeechProvider(rawValue: draft.speechEngine),
+            let service = CredentialAccessService(speech: provider)
+        else { return nil }
+        return { _ = navigate(to: .models, anchor: SavedKeyAnchor(service: service, allow: true).rawValue) }
+    }
     private func openCredentialService(_ service: CredentialAccessService) {
-        if service == .textAPI {
-            _ = navigate(to: .models, anchor: "api")
-            return
-        }
-        guard navigate(to: .models, anchor: "speech-services") else { return }
-        switch service {
+        _ = navigate(to: .models, anchor: SavedKeyAnchor(service: service, allow: false).rawValue)
+    }
+    // A saved-key anchor opens that service's editor in Services, where its key
+    // line is; one that asks to allow also starts Allow access there.
+    private func openKeyAnchor(_ anchor: String?) {
+        guard let key = anchor.flatMap(SavedKeyAnchor.init(rawValue:)) else { return }
+        switch key.service {
+        case .textAPI: break
         case .azure: speechConnectionProvider = .azure
         case .google: speechConnectionProvider = .google
         case .elevenLabs: speechConnectionProvider = .elevenlabs
         case .speechAPI: speechConnectionProvider = .speechAPI
-        case .textAPI: break
         }
+        keyAllowRequest = key.allow ? key.service : nil
     }
     private var localModelSelections: Binding<LocalModelSelection> {
         Binding(get: { LocalModelSelection(draft) }, set: { values in values.apply(to: &draft) })
@@ -2081,6 +2109,7 @@ struct SettingsView: View {
     }
     @discardableResult
     private func navigate(to target: SettingsPage, anchor: String? = nil) -> Bool {
+        let requested = anchor
         let anchor = resolvedAnchor(anchor)
         if guidePresented {
             guard commitCoordinator.commit() else { return false }
@@ -2090,6 +2119,7 @@ struct SettingsView: View {
             reveal(anchor)
             search = ""
             navigationTarget = anchor
+            openKeyAnchor(requested)
             return true
         }
         guard commitCoordinator.commit() else { return false }
@@ -2098,6 +2128,7 @@ struct SettingsView: View {
         search = ""
         page = SettingsPage.destination(target, anchor: anchor)
         navigationTarget = anchor
+        openKeyAnchor(requested)
         return true
     }
     private func resolvedAnchor(_ anchor: String?) -> String? {
@@ -2112,7 +2143,12 @@ struct SettingsView: View {
         case "automatic": return "yullo-window"
         case "selection-editing": return "selected-text"
         case "direction": return "language-suggestions"
-        default: return anchor
+        default:
+            if let key = anchor.flatMap(SavedKeyAnchor.init(rawValue:)) {
+                return key.service == .textAPI
+                    ? SettingsConnectionSection.api.rawValue : SettingsConnectionSection.speech.rawValue
+            }
+            return anchor
         }
     }
     private func moveSearchSelection(_ step: Int) -> KeyPress.Result {
@@ -2129,6 +2165,18 @@ struct SettingsView: View {
         if anchor == "api-response-streaming" { expandedConnections.insert(.api) }
         if anchor == "model-browse" { modelBrowseRequest = UUID() }
         if anchor == "model-browse" || anchor == "model-library" { showModelLibrary = true }
+        // A link to Ollama opens its editor, where its one fix is.
+        if anchor == "ollama" {
+            ollamaRequested = true
+            ollamaRequest = UUID()
+        }
+        // Languages to download open their manager once Translation is showing.
+        if anchor == "apple-language-manager" {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                openAppleLanguageManager()
+            }
+        }
         // The guide's Review setup… for on-device processing opens the review itself.
         if anchor == "processing-review" { openQuickSetup() }
         if let anchor, let section = SettingsConnectionSection(rawValue: anchor) {

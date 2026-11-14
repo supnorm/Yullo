@@ -16,6 +16,25 @@ enum CredentialAccessService: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
+// Where a saved key is fixed: its service's editor in Settings › Services.
+// `allow` also starts Allow access there, for a fix pressed where a task stopped.
+struct SavedKeyAnchor: Equatable {
+    let service: CredentialAccessService
+    let allow: Bool
+    var rawValue: String { (allow ? "allow-key-" : "key-") + service.rawValue }
+    init(service: CredentialAccessService, allow: Bool) {
+        self.service = service
+        self.allow = allow
+    }
+    init?(rawValue: String) {
+        let allow = rawValue.hasPrefix("allow-key-")
+        guard allow || rawValue.hasPrefix("key-"),
+            let service = CredentialAccessService(rawValue: String(rawValue.dropFirst(allow ? 10 : 4)))
+        else { return nil }
+        self.init(service: service, allow: allow)
+    }
+}
+
 // Exact namespaces are private implementation data, never row labels, endpoint
 // diagnostics or an instruction to enumerate the machine's Keychain.
 struct CredentialAccessTarget: Equatable, Sendable {
@@ -130,6 +149,8 @@ final class CredentialAccessController: ObservableObject {
     @Published private(set) var isRequestingAccess = false
     @Published private(set) var isCoolingDown = false
     @Published private(set) var didCheck = false
+    // Keys the person allowed through this controller, for as long as they stay the same keys.
+    @Published private(set) var allowed: Set<CredentialAccessService> = []
     private let backend: CredentialAccessBackend
     private let cooldown: TimeInterval
     private var targets: [CredentialAccessTarget] = []
@@ -140,6 +161,15 @@ final class CredentialAccessController: ObservableObject {
     private var inspectionScope: Set<CredentialAccessService> = []
     private var inspectedTargets: [CredentialAccessService: CredentialAccessTarget] = [:]
     private var operationServices: Set<CredentialAccessService> = []
+    // A macOS prompt can't be withdrawn. Yullo's Cancel stops waiting for it;
+    // the prompt's own answer still lands here, and pressing Allow access
+    // again waits for the same prompt instead of asking twice.
+    private struct Prompt {
+        let id = UUID()
+        let target: CredentialAccessTarget
+        let before: CredentialAccessState
+    }
+    private var prompt: Prompt?
 
     init(backend: CredentialAccessBackend? = nil, cooldown: TimeInterval = 2) {
         self.backend = backend ?? .system
@@ -153,7 +183,7 @@ final class CredentialAccessController: ObservableObject {
     var canManage: Bool { presented && !isWorking }
     var canCheck: Bool {
         presented && !isWorking && !isCoolingDown
-            && targets.contains { $0.account != nil }
+            && targets.contains { $0.account != nil && $0 != prompt?.target }
     }
     func appear(
         targets: [CredentialAccessTarget], inspecting services: Set<CredentialAccessService> = []
@@ -172,6 +202,9 @@ final class CredentialAccessController: ObservableObject {
             let previousTargets = Dictionary(uniqueKeysWithValues: targets.map { ($0.service, $0) })
             let previousStates = Dictionary(uniqueKeysWithValues: rows.map { ($0.service, $0.state) })
             cancel()
+            allowed = allowed.filter { service in
+                targets.first { $0.service == service } == next.first { $0.service == service }
+            }
             targets = next
             didCheck = false
             rows = next.map { target in
@@ -198,6 +231,7 @@ final class CredentialAccessController: ObservableObject {
         guard presented, !isWorking else { return false }
         let requested = targets.filter {
             inspectionScope.contains($0.service) && $0.account != nil && inspectedTargets[$0.service] != $0
+                && $0 != prompt?.target
         }
         guard !requested.isEmpty else { return false }
         beginCheck(requested)
@@ -223,16 +257,21 @@ final class CredentialAccessController: ObservableObject {
         isCoolingDown = false
         rows = rows.map { row in
             var value = row
-            if value.state.isWorking { value.state = .notChecked }
+            if value.state == .requestingAccess, let prompt, prompt.target.service == row.service {
+                value.state = prompt.before
+            } else if value.state.isWorking {
+                value.state = .notChecked
+            }
             return value
         }
     }
     func check() {
         guard canCheck else { return }
-        beginCheck(targets)
+        beginCheck(targets.filter { $0 != prompt?.target })
     }
     func canCheck(_ service: CredentialAccessService) -> Bool {
-        presented && !isWorking && targets.contains { $0.service == service && $0.account != nil }
+        presented && !isWorking
+            && targets.contains { $0.service == service && $0.account != nil && $0 != prompt?.target }
     }
     func check(_ service: CredentialAccessService) {
         guard canCheck(service) else { return }
@@ -298,38 +337,64 @@ final class CredentialAccessController: ObservableObject {
     // Only this explicit row action can permit a macOS authentication prompt.
     // It checks one current namespace, never every configured account at once.
     func allowAccess(for service: CredentialAccessService) {
-        guard presented, !isWorking,
-            rows.first(where: { $0.service == service })?.state.needsAccess == true,
+        guard presented, !isRequestingAccess,
+            let state = rows.first(where: { $0.service == service })?.state, state.needsAccess,
             let target = targets.first(where: { $0.service == service }), let account = target.account
         else { return }
+        // The person's press wins over a silent check still running.
+        if isChecking { cancel() }
         cooldownTask?.cancel()
         cooldownTask = nil
         isCoolingDown = false
-        let ticket = UUID()
-        revision = ticket
+        revision = UUID()
         isRequestingAccess = true
         operationServices = [service]
         inspectedTargets[service] = target
         set(.requestingAccess, for: service)
+        // The macOS prompt from an earlier press is still up: wait for its answer.
+        if prompt?.target == target { return }
+        let current = Prompt(target: target, before: state)
+        prompt = current
         backend.prepareInteractive(account)
         let backend = backend
         CredentialAccessInteraction.begin()
-        operation = Task { @MainActor [weak self] in
+        // Not `operation`: Cancel must not end the read while macOS still shows its prompt.
+        Task { @MainActor [weak self] in
             defer { CredentialAccessInteraction.end() }
-            guard self?.current(ticket) == true else { return }
-            let state: CredentialAccessState
-            do {
-                state = try await backend.readAvailable(account, true) ? .available : .noSavedKey
-            } catch is CancellationError {
-                self?.finish(ticket, completed: false)
-                return
-            } catch { state = Self.state(for: error) }
-            guard self?.current(ticket) == true, self?.targets.contains(target) == true else {
-                self?.finish(ticket, completed: false)
+            // Canceled before macOS was asked: nothing to wait for.
+            guard self?.isWaiting(for: service) == true else {
+                self?.answered(current, current.before)
                 return
             }
-            self?.set(state, for: service)
-            self?.finish(ticket, completed: false)
+            let answer: CredentialAccessState
+            do {
+                answer = try await backend.readAvailable(account, true) ? .available : .noSavedKey
+            } catch is CancellationError {
+                answer = current.before
+            } catch { answer = Self.state(for: error) }
+            self?.answered(current, answer)
+        }
+    }
+    private func isWaiting(for service: CredentialAccessService) -> Bool {
+        presented && isRequestingAccess && operationServices == [service]
+    }
+    private func answered(_ answered: Prompt, _ answer: CredentialAccessState) {
+        guard prompt?.id == answered.id else { return }
+        prompt = nil
+        let service = answered.target.service
+        let waiting = isWaiting(for: service)
+        if targets.contains(answered.target) {
+            switch answer {
+            case .available, .noSavedKey, .needsAccess: set(answer, for: service)
+            // Nobody is waiting any more: a prompt that ended without an answer isn't an error to show.
+            default: set(waiting ? answer : answered.before, for: service)
+            }
+        }
+        if waiting { finish(revision, completed: false) }
+        // Wherever access was allowed, the task that stopped for the key can run again.
+        if answer == .available {
+            if targets.contains(answered.target) { allowed.insert(service) }
+            NotificationCenter.default.post(name: CredentialAccessInteraction.allowed, object: nil)
         }
     }
     // An already-observed failure can be shown here without another read. The

@@ -24,6 +24,41 @@ enum ReleaseNotes {
     }
     static let entries: [Entry] = [
         .init(
+            version: "1.0.1", build: "2", isPreview: false,
+            titleKey: "What’s new",
+            leadKey: "Yullo now works in more apps, and on a new Mac from the first launch.",
+            features: [
+                .init(
+                    titleKey: "Replace in more apps",
+                    detailKey:
+                        "Replace now works in Chrome, Google Docs and Slides, Obsidian and other apps built on Chrome."),
+                .init(
+                    titleKey: "Codex and Claude Code",
+                    detailKey:
+                        "They work however you installed them, and your own instructions for them stay out of Yullo’s requests."
+                ),
+                .init(
+                    titleKey: "Clearer messages",
+                    detailKey:
+                        "When something needs your help, Yullo says what to do, with a command to copy where one helps."
+                ),
+                .init(
+                    titleKey: "Fix it where it stops",
+                    detailKey:
+                        "When something isn’t set up or allowed yet, one press takes you straight to the fix, such as allowing access to a saved key or downloading a model."
+                ),
+                .init(titleKey: "Your Mac’s language", detailKey: "A new install starts in your Mac’s language."),
+                .init(
+                    titleKey: "Apple Speech in Quick setup",
+                    detailKey: "Quick setup downloads the language Apple Speech needs, without leaving the page."),
+                .init(
+                    titleKey: "A guide that sets you up",
+                    detailKey:
+                        "The first-run guide now takes you through translation, writing, permissions and dictation, lets you try them as you go, and reopens from the menu where you left off."
+                )
+            ],
+            closingKey: "Your settings and history stay as they were."),
+        .init(
             version: "1.0", build: "1", isPreview: false,
             titleKey: "Introducing Yullo",
             leadKey:

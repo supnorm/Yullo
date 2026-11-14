@@ -31,9 +31,14 @@ enum AppleSpeechError: Error, LocalizedError, Equatable {
 struct AppleSpeechAssetBackend: Sendable {
     let reserve: @Sendable (Locale) async throws -> Bool
     let release: @Sendable (Locale) async -> Bool
+    // This app's reservations and how many macOS allows at once.
+    var reserved: @Sendable () async -> [Locale] = { [] }
+    var capacity = Int.max
     static let system = Self(
         reserve: { try await AssetInventory.reserve(locale: $0) },
-        release: { await AssetInventory.release(reservedLocale: $0) })
+        release: { await AssetInventory.release(reservedLocale: $0) },
+        reserved: { await AssetInventory.reservedLocales },
+        capacity: AssetInventory.maximumReservedLocales)
 }
 
 // Reservations are app-wide, and a false reserve receipt is not a new lease.
@@ -91,6 +96,21 @@ actor AppleSpeechAssetReservations {
             task: Task { for locale in locales { _ = await backend.release(locale) } })
         drain = pending
         await finishDrain(pending)
+    }
+    // macOS removes a language's assets soon after its last reservation ends, so a
+    // language the person downloaded keeps its reservation after the cohort drains.
+    func keep(locale: Locale) {
+        owned.removeAll { $0.identifier == locale.identifier }
+    }
+    // At the limit, a new download replaces languages kept by earlier downloads;
+    // reservations held by work in progress stay.
+    func makeRoom(for locale: Locale) async {
+        var reserved = await backend.reserved()
+        guard !reserved.contains(where: { $0.identifier == locale.identifier }) else { return }
+        for kept in reserved where reserved.count >= backend.capacity {
+            guard !owned.contains(where: { $0.identifier == kept.identifier }) else { continue }
+            if await backend.release(kept) { reserved.removeAll { $0.identifier == kept.identifier } }
+        }
     }
     private func finishDrain(_ pending: Drain) async {
         await pending.task.value
@@ -203,6 +223,9 @@ actor AppleSpeechTranscriber {
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeID)) else {
             throw AppleSpeechError.unsupportedLocale
         }
+        // A language that was already installed goes back as it was; a new one stays.
+        let wasReady = await inspect(localeID: locale.identifier).state == .ready
+        if !wasReady { await reservations.makeRoom(for: locale) }
         let ticket = try await reservations.acquire(locale: locale)
         do {
             try Task.checkCancellation()
@@ -210,6 +233,7 @@ actor AppleSpeechTranscriber {
                 try await request.downloadAndInstall()
             }
             _ = try await availableLocale(localeID: locale.identifier)
+            if !wasReady { await reservations.keep(locale: locale) }
         } catch {
             await reservations.release(ticket)
             if Task.isCancelled || error is CancellationError { throw CancellationError() }

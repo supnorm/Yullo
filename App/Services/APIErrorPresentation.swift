@@ -5,14 +5,27 @@ enum APIError: LocalizedError, CoreFallbackError {
     case invalidEndpoint, missingModel, invalidLanguage, http(Int), invalidResponse, refused, truncated, empty,
         keychain(OSStatus)
     var allowsAutomaticFallback: Bool {
-        if case .keychain = self { return false }
+        // No key saved is like a key the service rejects; other key failures stop here.
+        if case .keychain(let status) = self { return status == errSecItemNotFound }
         return true
     }
     // Only TranslationRoute may recover saved-key failures through an already
     // approved Apple fallback. Speech/writing keep the generic gate closed.
     var isKeyAccessFailure: Bool {
-        if case .keychain = self { return true }
+        if case .keychain(let status) = self { return status != errSecItemNotFound }
         return false
+    }
+    // A key is saved, but macOS asks before Yullo may read it: Allow access is the
+    // fix, not setting the service up again. A missing key reads as no key.
+    var needsKeyPermission: Bool {
+        guard case .keychain(let status) = self else { return false }
+        return [errSecInteractionNotAllowed, errSecInteractionRequired, errSecAuthFailed, errSecUserCanceled]
+            .contains(status)
+    }
+    // Keychain is busy for now; trying again is the answer.
+    var isKeychainBusy: Bool {
+        guard case .keychain(let status) = self else { return false }
+        return status == errSecNotAvailable || status == errSecInDarkWake
     }
     var errorDescription: String? {
         switch self {

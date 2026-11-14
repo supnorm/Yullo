@@ -5,7 +5,7 @@ if [ "$#" -gt 0 ]; then
         cat <<'USAGE'
 Usage: bash build.sh
 Build, sign and audit build/Yullo.app without installing it.
-YULLO_VERSION (default 1.0) and YULLO_BUILD (default 1) set a release's
+YULLO_VERSION (default 1.0.1) and YULLO_BUILD (default 2) set a release's
 CFBundleShortVersionString and CFBundleVersion; each release raises both.
 USAGE
         exit 0
@@ -16,8 +16,8 @@ fi
 cd "$(dirname "$0")"
 # Reject missing/unavailable local identity before downloading or compiling.
 python3 scripts/setup-signing.py --check
-YULLO_VERSION="${YULLO_VERSION:-1.0}"
-YULLO_BUILD="${YULLO_BUILD:-1}"
+YULLO_VERSION="${YULLO_VERSION:-1.0.1}"
+YULLO_BUILD="${YULLO_BUILD:-2}"
 if ! [[ "$YULLO_VERSION" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){1,2}$ && "$YULLO_BUILD" =~ ^[1-9][0-9]*$ ]]; then
     echo "YULLO_VERSION must look like 1.1 or 1.0.1 and YULLO_BUILD must be a positive whole number." >&2
     exit 2

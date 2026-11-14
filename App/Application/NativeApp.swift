@@ -222,11 +222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         #endif
         return NSApp.keyWindow
     }
-    private var accessibilityTrusted: Bool {
+    // Read live at every selection action, never cached at launch.
+    private func accessibilityGrant(_ action: String) -> AccessibilityGrant {
         #if YULLO_TESTING
-            if let stated = AppDelegate.testingSeams.accessibilityTrusted { return stated }
+            if let stated = AppDelegate.testingSeams.accessibilityTrusted { return stated ? .granted : .missing }
         #endif
-        return AXIsProcessTrusted()
+        return AccessibilityGrant.checked(action)
     }
     private var uptime: TimeInterval {
         #if YULLO_TESTING
@@ -448,11 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return menu
         }
         // The real guide, as Welcome's Set up Yullo opens it.
-        func testPresentGuide() {
-            UserDefaults.standard.set(SettingsPage.setup.rawValue, forKey: "yullo.settingsPage")
-            settingsInitialAnchor = "experience-setup"
-            showSettings()
-        }
+        func testPresentGuide() { showSetupGuide() }
         var testSettingsLoaded: Bool { settingsLoaded }
         var testSampleCardScreenRect: NSRect? { voiceEditAnchor ?? sampleCardScreenRect() }
         var testingFrontApplication: OutputAppChooser.App?
@@ -660,8 +657,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.presentSettings(page: .translation, anchor: "writing-service")
             case .anotherService(writing: false):
                 self.presentSettings(page: .translation, anchor: "translation-model")
-            case .keychain:
-                self.presentSettings(page: .setup, anchor: "keychain")
+            case .keychain, .speechKeyAccess, .speechKey:
+                guard let anchor = Self.savedKeyAnchor(action) else { return }
+                self.presentSettings(page: .models, anchor: anchor.rawValue)
             case .openOllama:
                 OllamaSuggestion.openApp(host: self.model.preferences.ollamaHost) {}
             case .appleLanguages:
@@ -676,6 +674,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.presentSettings(page: .general, anchor: "shortcuts")
             case .readAloud:
                 self.presentSettings(page: .speech, anchor: nil)
+            case .writer:
+                let location = Self.engineLocation(self.model.preferences.voiceRefinementEngine, writing: true)
+                self.presentSettings(page: location.page, anchor: location.anchor, modelTask: location.task)
+            case .cliSignIn(let provider):
+                self.showVoiceSetup(.cliSignIn(provider))
+            case .allowOnline:
+                self.presentSettings(page: .setup, anchor: "processing")
             case .systemVoices:
                 if let url = URL(
                     string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")
@@ -683,12 +688,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     NSWorkspace.shared.open(url)
                 }
             case .service:
-                let engine = self.model.preferences.engine
-                self.presentSettings(
-                    page: engine == "api" || engine == "cli" || engine == "local" ? .models : .translation,
-                    anchor: engine == "api"
-                        ? "api" : engine == "cli" ? "cli" : engine == "local" ? "models" : "translation-model",
-                    modelTask: engine == "local" ? .translation : nil)
+                let location = Self.engineLocation(self.model.preferences.engine, writing: false)
+                self.presentSettings(page: location.page, anchor: location.anchor, modelTask: location.task)
             }
         }
         voiceInput.openSettings = { [weak self] in self?.showVoiceSettings() }
@@ -829,7 +830,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 refining: true)
             self.openPanel()
         }
-        refineInPlace.openSetup = { [weak self] in self?.presentSettings(page: .models) }
+        // Not set up: the writer's own setup, or the row that chooses one.
+        refineInPlace.openSetup = { [weak self] in
+            guard let self else { return }
+            let engine = self.model.preferences.voiceRefinementEngine
+            guard VoiceEditService.isConfigured(self.model.preferences) else {
+                WriteWithRow.opensChooser = true
+                self.presentSettings(page: .refine, anchor: "writing-service")
+                return
+            }
+            let location = Self.engineLocation(engine, writing: true)
+            self.presentSettings(page: location.page, anchor: location.anchor, modelTask: location.task)
+        }
         refineInPlace.openFix = { [weak self] fix in self?.model.openTranslationRecovery?(fix) }
         refineInPlace.recordInstruction = { [weak self] in await self?.recordInPlaceInstruction() }
         refineInPlace.openReview = { [weak self] original, instruction, result in
@@ -1135,10 +1147,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(withTitle: L10n.tr("Recent result"), action: #selector(showRecentVoiceResult), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: L10n.tr("About Yullo"), action: #selector(showAbout), keyEquivalent: "")
+        // Held ⌥: what to send when Yullo can't edit text on a Mac.
+        let diagnostics = menu.addItem(
+            withTitle: L10n.tr("Copy Diagnostics"), action: #selector(copyDiagnostics), keyEquivalent: "")
+        diagnostics.keyEquivalentModifierMask = .option
+        diagnostics.isAlternate = true
         menu.addItem(withTitle: L10n.tr("Check for Updates…"), action: #selector(checkForUpdates), keyEquivalent: "")
         // Grouped as in a macOS app menu: about and updates, settings, quit.
         menu.addItem(.separator())
         menu.addItem(withTitle: L10n.tr("Settings…"), action: #selector(showSettings), keyEquivalent: ",")
+        // The first-run guide, again: it continues at the step where it was left.
+        menu.addItem(withTitle: L10n.tr("Setup Guide…"), action: #selector(showSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: L10n.tr("Quit Yullo"), action: #selector(quit), keyEquivalent: "q")
         for entry in menu.items { entry.target = self }
@@ -1964,7 +1983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func refineSelectionPanel() { captureSelection(refining: true) }
     func refineInPlace(row: Int) {
         guard !hasBlockingModalInteraction, !refineInPlace.isEditing else { return }
-        guard AXIsProcessTrusted() else {
+        guard accessibilityGrant("refine-in-place") == .granted else {
             captureSelection(refining: true)
             return
         }
@@ -2010,7 +2029,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !offerWelcomeIfNeeded(), !hasBlockingModalInteraction, !voiceInput.isBusy, !refineInPlace.isBusy,
             !selectionVoiceEdit.isBusy
         else { return }
-        guard accessibilityTrusted else {
+        guard accessibilityGrant("edit-in-place") == .granted else {
             captureSelection(refining: true)
             return
         }
@@ -2038,7 +2057,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !offerWelcomeIfNeeded(), !hasBlockingModalInteraction, !voiceInput.isBusy, !refineInPlace.isBusy,
             !selectionVoiceEdit.isBusy
         else { return }
-        guard accessibilityTrusted else {
+        guard accessibilityGrant("edit-in-place") == .granted else {
             captureSelection(refining: true)
             return
         }
@@ -2079,7 +2098,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 let id = try self.selectionVoiceEdit.prepare(
                     source: selection.text, token: selection.replacementToken,
                     settings: TranslationSettings(preferences, engine: preferences.voiceRefinementEngine),
-                    sourceIsCurrent: { true })
+                    sourceIsCurrent: { true },
+                    sourceApp: NSRunningApplication(processIdentifier: front)?.localizedName)
                 self.captureVoiceEditHistory(session: id)
                 self.voiceEditAnchor = nil
                 self.voiceEditSource = (
@@ -2154,12 +2174,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !offerWelcomeIfNeeded() else { return }
         guard !hasBlockingModalInteraction else { return }
         guard commitSettingsIfNeeded() else { return }
-        guard AXIsProcessTrusted() else {
+        let grant = accessibilityGrant(refining ? "refine-selection" : "translate-selection")
+        guard grant == .granted else {
             let alert = NSAlert()
             alert.messageText = L10n.tr(
                 refining ? "Enable selected-text refinement" : "Enable selected-text translation")
-            alert.informativeText = L10n.tr(
-                "Turn on Yullo in Accessibility settings, then select your text and press your shortcut again.")
+            alert.informativeText = grant.message ?? ""
             alert.addButton(withTitle: L10n.tr("Open Accessibility Settings"))
             alert.addButton(withTitle: L10n.tr("Not Now"))
             AppDelegate.activateYullo()
@@ -2810,17 +2830,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     self.presentSettings(page: .refine, anchor: "writing-service")
                 }
             )
-        case .credentials, .processing, .service, .vocabulary, .permissions:
+        case .openOllama:
+            // Started where the edit stopped; the same request runs once Ollama answers.
+            return (
+                L10n.tr("Open Ollama"),
+                { [weak self, weak edit] in
+                    guard let self else { return }
+                    OllamaSuggestion.openApp(host: self.model.preferences.ollamaHost) { edit?.retry() }
+                }
+            )
+        case .signIn(let provider):
+            return (
+                L10n.tr("Sign in…"),
+                { [weak self] in self?.showVoiceSetup(.cliSignIn(provider)) }
+            )
+        case .permissions:
+            // Accessibility is allowed in System Settings, opened at its pane; the review stays.
+            return (L10n.tr("Allow access…"), { Model.openAccessibilitySettings() })
+        case .credentials, .processing, .service, .vocabulary:
             let label =
                 recovery == .credentials
-                ? "Check key access…"
+                ? "Allow access…"
                 : recovery == .processing
                     ? "Review setup…"
                     : recovery == .vocabulary
                         ? "Personal vocabulary"
-                        : recovery == .permissions
-                            ? "Permissions"
-                            : "Service settings…"
+                        : "Service settings…"
             return (
                 L10n.tr(label),
                 { [weak self] in
@@ -2840,9 +2875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                             ? .credentials
                             : recovery == .processing
                                 ? .processing
-                                : recovery == .permissions
-                                    ? .accessibility
-                                    : .refinement(engine: self.model.preferences.voiceRefinementEngine))
+                                : .refinement(engine: self.model.preferences.voiceRefinementEngine))
                 }
             )
         }
@@ -2888,6 +2921,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private func showVoiceSettings() {
         showVoiceSetup(.recognition)
     }
+    // A saved key is fixed in its service's editor in Services. Allow access
+    // there starts at once, so the press where the task stopped is the whole fix.
+    static func savedKeyAnchor(_ action: TranslationRecoveryAction) -> SavedKeyAnchor? {
+        switch action {
+        case .keychain: return SavedKeyAnchor(service: .textAPI, allow: true)
+        case .speechKeyAccess(let service): return SavedKeyAnchor(service: service, allow: true)
+        case .speechKey(let service): return SavedKeyAnchor(service: service, allow: false)
+        default: return nil
+        }
+    }
+    // Where an engine's own setup is, for the task that failed: its editor in
+    // Services (opened), the model library, Apple's languages, or the row that chooses one.
+    static func engineLocation(_ engine: String, writing: Bool) -> (
+        page: SettingsPage, anchor: String, task: ModelTask?
+    ) {
+        switch engine {
+        case "api": return (.models, "api", nil)
+        case "cli": return (.models, "cli", nil)
+        case "ollama": return (.models, "ollama", nil)
+        case "local": return (.models, "model-library", writing ? nil : .translation)
+        case "apple" where !writing: return (.translation, "apple-language-manager", nil)
+        default: return writing ? (.refine, "writing-service", nil) : (.translation, "translation-model", nil)
+        }
+    }
     static func voiceSetupLocation(_ destination: VoiceSetupDestination) -> (page: SettingsPage, anchor: String) {
         switch destination {
         case .recognition:
@@ -2897,20 +2954,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case .microphone, .accessibility:
             return (.setup, "permissions")
         case .credentials:
-            return (.setup, "keychain")
+            return (.models, savedKeyAnchor(.keychain)?.rawValue ?? "api")
         case .processing:
             return (.setup, "processing")
         case .translation(let engine):
-            if engine == "api" { return (.models, "api") }
-            if engine == "cli" { return (.models, "cli") }
-            if engine == "local" { return (.models, "models") }
-            return (.translation, engine == "apple" ? "apple" : "translation-model")
+            let location = engineLocation(engine, writing: false)
+            return (location.page, location.anchor)
         case .refinement(let engine):
-            if engine == "api" { return (.models, "api") }
-            if engine == "cli" { return (.models, "cli") }
-            return (.dictation, "refine-setup")
+            let location = engineLocation(engine, writing: true)
+            return (location.page, location.anchor)
+        case .cliSignIn:
+            return (.models, "cli")
         case .openOllama, .appleIntelligence:
-            return (.dictation, "refine-setup")
+            return (.refine, "writing-service")
         }
     }
     private func showVoiceSetup(_ destination: VoiceSetupDestination) {
@@ -2921,6 +2977,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case .appleIntelligence:
             NSWorkspace.shared.open(AppleWriterPresentation.settingsURL)
             return
+        // Allowed in System Settings: open its pane at once, not a Settings page that links there.
+        case .microphone:
+            PermissionSettingsBackend.system.openMicrophoneSettings()
+            return
+        case .accessibility:
+            Model.openAccessibilitySettings()
+            return
+        // Terminal opens on the tool's own sign-in command; Services if Terminal can't.
+        case .cliSignIn(let provider):
+            guard !WritingServiceSetupEffects.live.signIn(provider) else { return }
         default: break
         }
         let location = Self.voiceSetupLocation(destination)
@@ -2936,6 +3002,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         presentSettings(page: location.page, anchor: location.anchor, modelTask: task)
     }
     @objc func showAbout() { presentSettings(page: .about) }
+    @objc func copyDiagnostics() {
+        // The menu bar menu leaves the app the person was using in front.
+        let front = NSWorkspace.shared.frontmostApplication.flatMap {
+            $0.processIdentifier == ProcessInfo.processInfo.processIdentifier
+                ? lastExternalPID.flatMap(NSRunningApplication.init(processIdentifier:)) : $0
+        }
+        DeliveryFallback.copy(AccessibilityDiagnostics.report(front: front))
+    }
+    // Opens the guide in Settings as Welcome's Set up Yullo does, at its saved step.
+    @objc func showSetupGuide() { presentSettings(page: .setup, anchor: "experience-setup") }
     @objc func checkForUpdates() { AppUpdates.shared.check() }
     @objc func showWhereYulloWorks() { presentSettings(page: .setup, anchor: "processing") }
     private func presentSettings(

@@ -10,8 +10,8 @@ enum VoiceSetupDestination: Equatable {
     case recognition, finishMethods, microphone, accessibility, credentials, processing, translation(engine: String),
         refinement(
             engine: String)
-    // Fixed outside Settings: start Ollama, or turn on Apple Intelligence.
-    case openOllama, appleIntelligence
+    // Fixed outside Settings: start Ollama, turn on Apple Intelligence, or sign in to a CLI.
+    case openOllama, appleIntelligence, cliSignIn(CLIProvider)
 }
 
 // Configuration metadata only: opening a menu never probes a process, network
@@ -292,7 +292,13 @@ struct VoiceBackend {
     var refine: (String, RewriteStyle, TranslationSettings) async throws -> String = {
         try await RefinementService.shared.refine(text: $0, style: $1, settings: $2)
     }
+    {
+        didSet { refineResult = nil }
+    }
     var translateResult: ((String, String, TranslationSettings) async throws -> TranslationRoute.Result)? = nil
+    // The system route also says when the backup writer wrote instead of Apple's model.
+    var refineResult: ((String, RewriteStyle, TranslationSettings) async throws -> (text: String, note: String?))? =
+        nil
     var startLive:
         (
             VoiceRecognitionSettings, @Sendable @escaping (String) -> Void,
@@ -331,7 +337,9 @@ struct VoiceBackend {
             caretBounds: { await TextDelivery.caretBounds(token: $0) },
             translateResult: {
                 try await TranslationService.shared.translate(text: $0, source: "auto", target: $1, settings: $2)
-            }, warmModel: { await VoiceResources.recognition.warm($0) },
+            },
+            refineResult: { try await RefinementService.shared.refineNoted(text: $0, style: $1, settings: $2) },
+            warmModel: { await VoiceResources.recognition.warm($0) },
             reserveRecognizer: { await VoiceResources.recognition.reserve($0) },
             prepareTranslation: {
                 if $0.ollamaOnThisMac {
@@ -1260,6 +1268,7 @@ private final class VoiceStartupPCM: @unchecked Sendable {
         switch TranslationRecoveryAction.fixing(error, writing: true) {
         case .openOllama: return .openOllama
         case .appleIntelligence: return .appleIntelligence
+        case .cliSignIn(let provider): return .cliSignIn(provider)
         default: return nil
         }
     }
@@ -2109,7 +2118,7 @@ private final class VoiceStartupPCM: @unchecked Sendable {
                 let recovery: RecentVoiceResultStore.Recovery? =
                     fallback && translated.recovery == .apiKeyAccess
                     ? (translated.usedMixedProviders ? .partlyAppleForAPIKeyAccess : .appleForAPIKeyAccess) : nil
-                let details = [fallback ? L10n.tr(translated.appleFallbackNoticeKey) : nil, notice]
+                let details = [fallback ? translated.appleFallbackNotice : nil, notice]
                     .compactMap { $0 }.joined(separator: "\n")
                 return (
                     translated.text, details.isEmpty ? nil : details,
@@ -2130,12 +2139,18 @@ private final class VoiceStartupPCM: @unchecked Sendable {
                 try ProcessingPolicyController.shared.requireExternal(writer.authorization)
             }
             guard session.canRefine else { throw RefinementIssue.connectionRequired }
-            let output = try await backend.refine(text, style, session.refinement)
+            let output: String, standIn: String?
+            if let refine = backend.refineResult {
+                (output, standIn) = try await refine(text, style, session.refinement)
+            } else {
+                (output, standIn) = (try await backend.refine(text, style, session.refinement), nil)
+            }
             // A result written in another language can't be compared word for word.
-            if session.refinement.writingRequirements.outputLanguage != nil { return (output, nil, nil, nil) }
+            if session.refinement.writingRequirements.outputLanguage != nil { return (output, standIn, nil, nil) }
             let review = try await WritingReview.inspect(
                 source: text, result: output, vocabulary: session.refinement.personalVocabulary)
-            return (output, review.notice, review.completionNotice, nil)
+            let details = [standIn, review.notice].compactMap { $0 }.joined(separator: "\n")
+            return (output, details.isEmpty ? nil : details, review.completionNotice, nil)
         }
     }
     private static func recoveryNotice(_ recovery: RecentVoiceResultStore.Recovery?) -> String? {
@@ -2172,11 +2187,13 @@ private final class VoiceStartupPCM: @unchecked Sendable {
     private static func safeFailureReason(_ error: Error) -> String? {
         if let failure = error as? TranslationRoute.Failure { return safeFailureReason(failure.api) }
         return error is APIError || error is CLIError || error is RefinementIssue || error is ProcessingPolicyIssue
+            || error is OllamaIssue || error is LocalTranslationIssue || error is ModelLibraryError
             || error is CoreLongTranslationError || error is StructuredJSONIssue || error is AppleTranslationIssue
             ? error.localizedDescription : nil
     }
     private static func isCredentialFailure(_ error: Error) -> Bool {
-        if let issue = error as? APIError, case .keychain = issue { return true }
+        // Only a key macOS hasn't allowed; a busy or unreadable Keychain is not fixed by Allow access.
+        if let issue = error as? APIError { return issue.needsKeyPermission }
         if let failure = error as? TranslationRoute.Failure { return isCredentialFailure(failure.api) }
         return false
     }

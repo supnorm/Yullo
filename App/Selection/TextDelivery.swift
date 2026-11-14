@@ -111,11 +111,13 @@ enum TextDelivery {
     private static let session = TextDeliverySession(backend: AXTextDeliveryBackend())
 
     static func capture(in processID: Int32) async throws -> Capture {
-        try await recoveringFocus(capturedProcessID: { processID }) { restoring, cancellation in
+        defer { worker.async { AccessibilityTreeWake.release() } }
+        return try await recoveringFocus(capturedProcessID: { processID }) { restoring, cancellation in
             try session.capture(in: processID, cancellation: cancellation, requireFrontmostApplication: restoring)
         }
     }
     static func insert(_ text: String, token: UUID) async throws -> Int32 {
+        defer { worker.async { AccessibilityTreeWake.release() } }
         SelectionReplacement.endLateCopyWatch()
         await CommandKeyCodes.refresh()
         do {
@@ -977,8 +979,23 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
         guard let result = value as? Bool else { throw TextDelivery.Issue.failed }
         return result
     }
+    // A Chromium or Electron app with no focused element yet is woken first (AccessibilityTreeWake).
     func focusedElement() throws -> AXUIElement {
-        let result = try read(configured(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute)
+        let result: CFTypeRef
+        do {
+            result = try AccessibilityTreeWake.focusedElement(
+                in: nil, missing: { $0 is TextDeliveryFocusIssue }
+            ) {
+                var value: CFTypeRef?
+                let error = AXUIElementCopyAttributeValue(
+                    configured(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute as CFString, &value)
+                if error == .noValue || (error == .success && value == nil) { throw TextDeliveryFocusIssue.unavailable }
+                guard error == .success, let value else { throw issue(error) }
+                return value
+            }
+        } catch is TextDeliveryFocusIssue {
+            throw issue(.noValue)
+        }
         guard CFGetTypeID(result) == AXUIElementGetTypeID() else { throw TextDelivery.Issue.staleDestination }
         return configured(unsafeBitCast(result, to: AXUIElement.self))
     }

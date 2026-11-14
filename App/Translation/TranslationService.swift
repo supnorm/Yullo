@@ -49,6 +49,18 @@ struct TranslationSettings: Equatable, Sendable {
 
 // The macOS composition boundary. Tests and future hosts inject providers;
 // credential lookup/storage, subprocesses and Apple frameworks stay in adapters.
+// The backup writer's own name, as Write with lists it, so the note names what wrote.
+enum BackupWriterNotice {
+    static func text(_ settings: TranslationSettings) -> String {
+        let name: String
+        switch settings.engine {
+        case "cli": name = settings.cli.provider.displayName
+        case "ollama": name = settings.ollamaModel.isEmpty ? "Ollama" : "Ollama · " + settings.ollamaModel
+        default: name = settings.model.isEmpty ? L10n.tr("Online service (API)") : settings.model
+        }
+        return L10n.format("Written with %@. Apple’s model couldn’t write this.", StandInName.unbroken(name))
+    }
+}
 struct TranslationProviders: Sendable {
     var remote: @Sendable (String, String, String, TranslationSettings) async throws -> String
     var local: @Sendable (String, String, String) async throws -> String
@@ -614,6 +626,8 @@ actor TranslationService {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
             }
         }
+        // The chosen model isn't on this Mac: Apple may stand in, and the result says so.
+        var localModelMissing = false
         let result = try await TranslationRoute.run(
             appleOnly: settings.engine == "apple", offline: useOfflineRoute,
             fallback: settings.appleFallback,
@@ -627,6 +641,9 @@ actor TranslationService {
                         return try await model(text, source, target, settings.localTranslationModelID)
                     } catch LocalTranslationIssue.inputTooLong where admissionCanSegment {
                         throw LongTranslationAdmission()
+                    } catch let issue as ModelLibraryError where issue == .unavailable || issue == .unknownModel {
+                        localModelMissing = true
+                        throw issue
                     }
                 }
                 if settings.engine == "ollama" {
@@ -685,11 +702,17 @@ actor TranslationService {
         let tidied =
             batch == nil && !result.usedApple && settings.engine != "apple"
             ? CoreWriterOutput.tidy(result.text, input: text) : result.text
-        return .init(
+        var translated = TranslationRoute.Result(
             text: tidied, usedApple: result.usedApple,
             terminologyUnavailable: !terms.isEmpty
                 && (result.usedApple || (settings.engine == "local" && providers.modelWithTerms == nil)),
             recovery: result.recovery)
+        if localModelMissing, result.usedApple {
+            translated.appleStoodInFor =
+                ModelLibrary.catalog.first { $0.id == settings.localTranslationModelID }?.name
+                ?? settings.localTranslationModelID
+        }
+        return translated
     }
     private func connectionFingerprint(_ settings: TranslationSettings) -> Data? {
         guard settings.engine == "api", let endpoint = try? APIClient.endpoint(settings.endpoint) else { return nil }

@@ -40,6 +40,7 @@ enum SelectionReplacement {
         lateCopyWatch.end()
         await CommandKeyCodes.refresh()
         return await SelectionCaptureWorker.run(on: worker) { cancellation -> SelectionReader.Outcome? in
+            defer { AccessibilityTreeWake.release() }
             session.invalidate()
             defer { if cancellation.isCancelled { session.invalidate() } }
             guard !cancellation.isCancelled, backend.isTrusted else { return nil }
@@ -101,7 +102,15 @@ enum SelectionReplacement {
                     let bounds = backend.selectedMarkerBounds(element)
                     let text = readable(nil)
                     guard !cancellation.isCancelled else { return nil }
-                    return .selection(SelectionReader.Result(text: text, bounds: bounds))
+                    // Read-only pages stay read-only; an editor that takes typing gets a paste-only lease.
+                    let token =
+                        backend.takesTyping(element)
+                        ? (try? backend.processID(element)).flatMap {
+                            session.rememberMarker(element: element, processID: $0, text: selection.text)
+                        } : nil
+                    return .selection(
+                        SelectionReader.Result(
+                            text: text, bounds: bounds, replacementToken: token, pastes: token != nil))
                 }
                 let range =
                     editableDocument
@@ -183,6 +192,8 @@ enum SelectionReplacement {
         let cancellation = SelectionReplacementCancellation(cancelled: Task.isCancelled)
         return try await withTaskCancellationHandler(
             operation: {
+                // Whatever this Replace turned on to reach a Chromium app is put back after it.
+                defer { worker.async { AccessibilityTreeWake.release() } }
                 do {
                     return try await SelectionReplacementFocusRecovery.run(
                         cancellation: cancellation, readinessTimeout: replacementReadiness,
@@ -310,10 +321,17 @@ protocol SelectionReplacementBackend {
     func state(of element: Element) throws -> SelectionReplacementState
     func selection(of element: Element) throws -> (text: String, range: NSRange)
     func write(_ text: String, to element: Element, expected: SelectionReplacementState) throws
+    // A selection published only as page markers: its text, and a paste over it.
+    func markerSelection(of element: Element) throws -> String
+    func pasteOverMarker(_ text: String, to element: Element, processID: Int32, selected: String) throws
 }
 
 extension SelectionReplacementBackend {
     func frontmostProcessID() throws -> Int32? { nil }
+    func markerSelection(of element: Element) throws -> String { throw SelectionReplacement.Issue.unsupported }
+    func pasteOverMarker(_ text: String, to element: Element, processID: Int32, selected: String) throws {
+        throw SelectionReplacement.Issue.unsupported
+    }
 }
 
 // An AX setter can return success without changing an editor. Confirm the
@@ -758,6 +776,7 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         let text: String
         let range: NSRange
         let created: TimeInterval
+        var marker = false
     }
     private let backend: Backend
     private let now: () -> TimeInterval
@@ -784,7 +803,7 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         else { return }
         target = Target(
             token: token, element: current.element, processID: current.processID, text: current.text,
-            range: current.range, created: now())
+            range: current.range, created: now(), marker: current.marker)
     }
 
     func recoverableProcessID(for token: UUID) -> Int32? {
@@ -802,6 +821,18 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         else { return nil }
         let token = UUID()
         target = Target(token: token, element: element, processID: processID, text: text, range: range, created: now())
+        return token
+    }
+
+    // An editor that publishes its selection only as page markers (Google Docs and
+    // Slides in a browser) has no field range to check. Its lease is paste-only.
+    func rememberMarker(element: Backend.Element, processID: Int32, text: String) -> UUID? {
+        target = nil
+        guard processID > 0, !text.isEmpty, text.utf8.count <= Self.maximumBytes else { return nil }
+        let token = UUID()
+        target = Target(
+            token: token, element: element, processID: processID, text: text,
+            range: NSRange(location: NSNotFound, length: 0), created: now(), marker: true)
         return token
     }
 
@@ -879,6 +910,43 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
                 }
                 throw SelectionReplacement.Issue.staleSelection
             }
+        }
+        if captured.marker {
+            // Pasted only while the same app is in front, the same element has focus
+            // and its selection still reads exactly as captured.
+            failureStage = "marker-foreground"
+            let front = try backend.frontmostProcessID()
+            try cancellation.check()
+            if front != captured.processID {
+                if front == nil || front == ProcessInfo.processInfo.processIdentifier {
+                    failureStage = "focus-unavailable"
+                    throw SelectionReplacement.Issue.focusUnavailable
+                }
+                throw SelectionReplacement.Issue.staleSelection
+            }
+            failureStage = "marker-focus"
+            guard backend.matches(try readFocusedElement(), captured.element) else {
+                throw SelectionReplacement.Issue.staleSelection
+            }
+            try cancellation.check()
+            failureStage = "marker-selection"
+            guard TextMutationRange.identical(try backend.markerSelection(of: captured.element), captured.text) else {
+                throw SelectionReplacement.Issue.staleSelection
+            }
+            failureStage = "final-expiry"
+            guard now() >= captured.created, now() - captured.created <= lifetime else {
+                target = nil
+                throw SelectionReplacement.Issue.staleSelection
+            }
+            failureStage = "write"
+            writing = true
+            try cancellation.performMutation {
+                target = nil
+                try backend.pasteOverMarker(
+                    text, to: captured.element, processID: captured.processID, selected: captured.text)
+            }
+            completed = true
+            return captured.processID
         }
         failureStage = "focus-read"
         let focused = try readFocusedElement()
@@ -993,11 +1061,34 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
         return configure(unsafeBitCast(value, to: AXUIElement.self))
     }
 
+    // A Chromium or Electron app with no focused element yet is woken first (AccessibilityTreeWake).
     func systemFocusedElement() throws -> AXUIElement {
-        try element(read(configure(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute))
+        do {
+            return try systemFocus()
+        } catch SelectionReplacement.Issue.focusUnavailable {
+            throw issue(.noValue)
+        }
     }
+    private func systemFocus() throws -> AXUIElement {
+        try AccessibilityTreeWake.focusedElement(in: nil, missing: Self.noFocus) {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(
+                configure(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute as CFString, &value)
+            if error == .noValue || (error == .success && value == nil) {
+                throw SelectionReplacement.Issue.focusUnavailable
+            }
+            guard error == .success, let value else { throw issue(error) }
+            return try element(value)
+        }
+    }
+    private static func noFocus(_ error: Error) -> Bool { error as? SelectionReplacement.Issue == .focusUnavailable }
 
     func focusedElement(in processID: Int32) throws -> AXUIElement {
+        try AccessibilityTreeWake.focusedElement(in: processID, missing: Self.noFocus) {
+            try readFocusedElement(in: processID)
+        }
+    }
+    private func readFocusedElement(in processID: Int32) throws -> AXUIElement {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(
             configure(AXUIElementCreateApplication(processID)), kAXFocusedUIElementAttribute as CFString, &value)
@@ -1092,6 +1183,54 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
             throw SelectionReplacement.Issue.unsupported
         }
         return text
+    }
+
+    func markerSelection(of element: AXUIElement) throws -> String { try selectedMarkerText(element) }
+
+    // The editor's own paste over its live selection, through the borrowed
+    // clipboard. It counts once the selection no longer reads as captured; what
+    // landed can't be read back, so callers say Pasted, not Replaced. Unconfirmed,
+    // the text stays on the clipboard rather than restoring before a late paste.
+    func pasteOverMarker(_ text: String, to element: AXUIElement, processID: Int32, selected: String) throws {
+        let lease = try TextDeliveryClipboardLease(clipboard: SystemDeliveryClipboard(), text: text)
+        var posted = false
+        defer { if !posted { try? lease.restoreIfOwned() } }
+        let key = CommandKeyCodes.paste
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
+            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+        else { throw SelectionReplacement.Issue.failed }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        do {
+            try lease.performIfOwned(validating: {
+                guard try self.frontmostProcessID() == processID,
+                    self.matches(try self.focusedElement(in: processID), element),
+                    TextMutationRange.identical(try self.selectedMarkerText(element), selected)
+                else { throw SelectionReplacement.Issue.staleSelection }
+            }) {
+                down.postToPid(processID)
+                up.postToPid(processID)
+                posted = true
+            }
+        } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 1.2
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let now = try? selectedMarkerText(element), !TextMutationRange.identical(now, selected) {
+                try? lease.restoreIfOwned()
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.03)  // AX worker only.
+        }
+        selectionReplacementLogger.error("Replacement failed stage=marker-paste-unchanged")
+        throw SelectionReplacement.Issue.uncertain
+    }
+
+    // Whether the focused element takes typing: the input target a canvas or
+    // contenteditable editor (Docs, Slides) keeps behind its page selection.
+    func takesTyping(_ element: AXUIElement) -> Bool {
+        if AXTextDeliveryBackend().isEditableWebArea(element) { return true }
+        if (try? optionalRead(element, "AXEditableAncestor")) != nil { return true }
+        return (try? optionalBool(element, kAXIsEditableAttribute)) == true
     }
 
     func selectedMarkerText(_ element: AXUIElement) throws -> String {

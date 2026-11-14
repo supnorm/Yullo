@@ -36,6 +36,19 @@ enum CredentialAccessTargets {
     }
 }
 
+// The saved key a read-aloud service uses.
+extension CredentialAccessService {
+    init?(speech provider: SpeechProvider) {
+        switch provider {
+        case .azure: self = .azure
+        case .google: self = .google
+        case .elevenlabs: self = .elevenLabs
+        case .speechAPI: self = .speechAPI
+        default: return nil
+        }
+    }
+}
+
 enum CredentialAccessGroup: String, CaseIterable, Identifiable {
     case text, speech
     var id: String { rawValue }
@@ -139,7 +152,6 @@ struct CredentialAccessView: View {
                     && previous.first(where: { $0.service == row.service })?.state == .requestingAccess
             }
             if granted {
-                NotificationCenter.default.post(name: CredentialAccessInteraction.allowed, object: nil)
                 // Settings stays while another key in use still needs access,
                 // so the person can allow it here too.
                 let pending = primaryRows.contains {
@@ -235,32 +247,7 @@ struct CredentialAccessView: View {
                 if row.state != .available { status(row) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 6) {
-                if row.state == .available {
-                    Label(L10n.tr("Allowed"), systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .accessibilityLabel(L10n.tr("Saved keys") + ": " + L10n.tr("Allowed"))
-                        .help(L10n.tr("Key available"))
-                        .credentialAccessProbe("state-" + row.service.rawValue)
-                } else if row.state.isWorking {
-                    HStack(spacing: 7) {
-                        ProgressView().controlSize(.small)
-                        Button(L10n.tr("Cancel")) { access.cancel() }
-                    }.accessibilityIdentifier("credential-access-cancel-" + row.service.rawValue)
-                } else if row.state.needsAccess {
-                    Button(L10n.tr("Allow access…")) { access.allowAccess(for: row.service) }
-                        .disabled(access.isWorking)
-                        .accessibilityIdentifier("credential-access-allow-" + row.service.rawValue)
-                        .credentialAccessProbe("allow-" + row.service.rawValue)
-                } else if row.state == .notChecked || row.state == .unavailable || row.state == .unreadable {
-                    Button(L10n.tr("Check")) { access.check(row.service) }
-                        .disabled(!access.canCheck(row.service))
-                        .help(
-                            L10n.tr("Checks this saved key without contacting the service or showing password prompts.")
-                        )
-                        .accessibilityLabel(L10n.format("Check %@", L10n.tr(row.service.titleKey)))
-                        .accessibilityIdentifier("credential-access-check-" + row.service.rawValue)
-                        .credentialAccessProbe("check-" + row.service.rawValue)
-                }
+                CredentialAccessAction(access: access, row: row)
                 if row.state == .notConfigured || row.state == .invalidConfiguration || row.state == .noSavedKey
                     || row.state == .unreadable
                 {
@@ -298,6 +285,99 @@ struct CredentialAccessView: View {
         case .google: return preferences.speechEngine == SpeechProvider.google.rawValue
         case .elevenLabs: return preferences.speechEngine == SpeechProvider.elevenlabs.rawValue
         case .speechAPI: return preferences.speechEngine == SpeechProvider.speechAPI.rawValue
+        }
+    }
+}
+
+// One saved key's next step: Allowed, progress with Cancel, Allow access… or
+// Check. Saved keys and each service's key field show this same control.
+@MainActor
+struct CredentialAccessAction: View {
+    @ObservedObject var access: CredentialAccessController
+    let row: CredentialAccessController.Row
+    // Probe IDs of a service's own key line, so both can be found in one window.
+    var probePrefix = ""
+    var body: some View {
+        if row.state == .available {
+            Label(L10n.tr("Allowed"), systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .accessibilityLabel(L10n.tr("Saved keys") + ": " + L10n.tr("Allowed"))
+                .help(L10n.tr("Key available"))
+                .credentialAccessProbe(probePrefix + "state-" + row.service.rawValue)
+        } else if row.state.isWorking {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Button(L10n.tr("Cancel")) { access.cancel() }
+                    .credentialAccessProbe(probePrefix + "cancel-" + row.service.rawValue, action: { access.cancel() })
+            }.accessibilityIdentifier(probePrefix + "credential-access-cancel-" + row.service.rawValue)
+        } else if row.state.needsAccess {
+            Button(L10n.tr("Allow access…")) { access.allowAccess(for: row.service) }
+                .disabled(access.isWorking)
+                .accessibilityIdentifier(probePrefix + "credential-access-allow-" + row.service.rawValue)
+                .credentialAccessProbe(
+                    probePrefix + "allow-" + row.service.rawValue, action: { access.allowAccess(for: row.service) })
+        } else if row.state == .notChecked || row.state == .unavailable || row.state == .unreadable {
+            Button(L10n.tr("Check")) { access.check(row.service) }
+                .disabled(!access.canCheck(row.service))
+                .help(L10n.tr("Checks this saved key without contacting the service or showing password prompts."))
+                .accessibilityLabel(L10n.format("Check %@", L10n.tr(row.service.titleKey)))
+                .accessibilityIdentifier(probePrefix + "credential-access-check-" + row.service.rawValue)
+                .credentialAccessProbe(probePrefix + "check-" + row.service.rawValue)
+        }
+    }
+}
+
+// Under a service's key field: the saved key's state and its one step, so
+// access is allowed where the key is. A fix pressed where a task stopped
+// arrives as `allowRequest`: once the silent check confirms macOS is asking,
+// the request goes on to Allow access, so that one press is the whole fix.
+@MainActor
+struct SavedKeyAccessLine: View {
+    @ObservedObject var access: CredentialAccessController
+    let service: CredentialAccessService
+    @Binding var allowRequest: CredentialAccessService?
+    private struct Progress: Equatable {
+        let state: CredentialAccessState?
+        let working: Bool
+    }
+    private var row: CredentialAccessController.Row? { access.rows.first { $0.service == service } }
+    private var shows: Bool {
+        guard let state = row?.state else { return false }
+        return state.needsAccess || state == .requestingAccess || state == .noSavedKey || state == .unavailable
+            // Allowed is confirmed once the person allowed it; a key that was readable says nothing.
+            || state == .unreadable || (state == .available && access.allowed.contains(service))
+    }
+    var body: some View {
+        Group {
+            if shows, let row {
+                HStack(alignment: .center, spacing: 12) {
+                    if row.state != .available {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L10n.tr(row.state.titleKey))
+                            if row.state.needsAccess || row.state == .requestingAccess {
+                                Text(L10n.tr("When macOS asks, choose Always Allow."))
+                                    .credentialAccessProbe("inline-access-help-" + service.rawValue)
+                            }
+                        }.font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .credentialAccessProbe("inline-state-" + service.rawValue)
+                    }
+                    Spacer(minLength: 8)
+                    CredentialAccessAction(access: access, row: row, probePrefix: "inline-").fixedSize()
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("saved-key-access-" + service.rawValue)
+            }
+        }
+        .onChange(of: Progress(state: row?.state, working: access.isWorking), initial: true) { _, new in
+            guard allowRequest == service, let state = new.state, !new.working else { return }
+            if state.needsAccess {
+                allowRequest = nil
+                access.allowAccess(for: service)
+            } else if state != .notChecked {
+                // Readable, missing or unreadable: nothing for macOS to allow.
+                allowRequest = nil
+            }
         }
     }
 }

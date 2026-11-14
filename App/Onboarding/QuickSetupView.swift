@@ -68,7 +68,8 @@ struct QuickSetupView: View {
         preferences: Preferences, models: VoiceModelStore, apply: @escaping (QuickSetupPatch) -> String?,
         openServices: @escaping () -> Void,
         openService: ((SettingsConnectionSection) -> Void)? = nil,
-        openLocalModels: @escaping (ModelDiscoveryTask) -> Void
+        openLocalModels: @escaping (ModelDiscoveryTask) -> Void,
+        coordinator: QuickSetupCoordinator? = nil
     ) {
         self.models = models
         self.apply = apply
@@ -78,7 +79,8 @@ struct QuickSetupView: View {
         self.preferences = preferences
         selectedLanguageIDs = preferences.enabledLanguages
         livePreviewRequested = preferences.voiceLivePreview
-        _setup = StateObject(wrappedValue: QuickSetupCoordinator(preferences: preferences, models: models))
+        _setup = StateObject(
+            wrappedValue: coordinator ?? QuickSetupCoordinator(preferences: preferences, models: models))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -157,7 +159,9 @@ struct QuickSetupView: View {
         dismiss()
     }
     private var primaryAction: QuickSetupPrimaryAction {
-        let downloading = setup.plan?.modelIDs.contains { models.downloads[$0]?.phase == .downloading } == true
+        let downloading =
+            setup.appleSpeechDownloading
+            || setup.plan?.modelIDs.contains { models.downloads[$0]?.phase == .downloading } == true
         // Online allowed waits only for a model picked here.
         return .resolve(
             route: setup.route == .services && setup.requiredModels.isEmpty ? .services : .onDevice,
@@ -169,6 +173,10 @@ struct QuickSetupView: View {
     private var primaryTitle: String {
         if primaryAction == .services && preferences.processingPolicy == .standard {
             return L10n.tr(changesNothing ? "Done" : "Apply setup")
+        }
+        // Only Apple Speech's language is missing: macOS sizes it, not Yullo.
+        if [.download, .retry].contains(primaryAction), setup.downloadSizeBytes == 0 {
+            return L10n.tr("Download Apple Speech language")
         }
         return primaryAction.title(
             size: L10n.size(setup.downloadSizeBytes))
@@ -450,7 +458,8 @@ struct QuickSetupView: View {
     private func modelOption(_ option: QuickSetupModelChoice) -> some View {
         Text(
             ModelCatalogPresentation.optionLabel(
-                option.name + " · " + L10n.size(option.sizeBytes),
+                // Apple Speech has no size of Yullo's to show.
+                option.sizeBytes > 0 ? option.name + " · " + L10n.size(option.sizeBytes) : option.name,
                 recommended: setup.recommendedIDs[option.task] == option.id)
         )
         .tag(option.id)

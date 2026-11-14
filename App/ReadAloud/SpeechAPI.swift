@@ -21,6 +21,11 @@ enum SpeechAPIError: Error, LocalizedError, Equatable {
         }
     }
 }
+// A refused key is told with its fix, like CloudSpeechError; other failures still fall back.
+extension SpeechAPIError: CoreFallbackError {
+    var isKeyProblem: Bool { self == .http(401) || self == .http(403) }
+    var allowsAutomaticFallback: Bool { !isKeyProblem }
+}
 
 struct SpeechAPIClient {
     private static let maximumAudioBytes = 32 * 1_024 * 1_024

@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 // Session-only response reuse. Fingerprints retain neither credentials nor the
 // source text; both the entry count and payload bytes have explicit limits.
@@ -486,9 +487,16 @@ struct APIClient {
             } onCancel: {
                 owner?.close()
             }
-        } catch let
-            error as CoreTranslationError
-        { throw APIError(error) }
+        } catch {
+            let issue = (error as? CoreTranslationError).map(APIError.init) ?? error
+            // Refused without a key: none is saved for this API, which is what to fix.
+            if case APIError.http(let status) = issue, status == 401 || status == 403,
+                request.value(forHTTPHeaderField: "Authorization") == nil
+            {
+                throw APIError.keychain(errSecItemNotFound)
+            }
+            throw issue
+        }
         try Task.checkCancellation()
         if let lookup { cache.insert(output, for: fingerprint, cost: output.utf8.count, generation: lookup.generation) }
         return output

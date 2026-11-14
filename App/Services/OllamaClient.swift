@@ -29,8 +29,14 @@ actor OllamaClient {
     private let session: URLSession
     init(session: URLSession = .shared) { self.session = session }
 
-    nonisolated static var isInstalled: Bool {
+    nonisolated static var hasApp: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
+    }
+    // The app, or the command alone from Homebrew or the install script, which
+    // runs as `ollama serve` or a service and has no app to open.
+    nonisolated static var isInstalled: Bool { hasApp || hasCommand() }
+    nonisolated static func hasCommand(in folders: [String] = ["/opt/homebrew/bin", "/usr/local/bin"]) -> Bool {
+        folders.contains { FileManager.default.isExecutableFile(atPath: $0 + "/ollama") }
     }
 
     func status(host: String) async -> Status {

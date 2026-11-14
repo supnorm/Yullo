@@ -306,6 +306,12 @@ final class SavedKeyAccess: @unchecked Sendable {
             }
             cached.removeValue(forKey: scope.account)
         }
+        // macOS is asking about this key right now; a silent read can only learn that it isn't allowed yet.
+        if !scope.interactive, let active, active.scope == Scope(account: scope.account, interactive: true) {
+            lock.unlock()
+            continuation.resume(throwing: APIError.keychain(errSecInteractionNotAllowed))
+            return
+        }
         guard waiterFlights.count < 256, flights.count < 64 || scopes[scope] != nil else {
             lock.unlock()
             continuation.resume(throwing: APIError.keychain(errSecNotAvailable))
@@ -348,7 +354,8 @@ final class SavedKeyAccess: @unchecked Sendable {
     }
     private func expire(_ id: UUID) {
         lock.lock()
-        guard let flight = flights[id] else {
+        // A prompt on screen is the person's to answer, however long it takes; Cancel stops waiting.
+        guard let flight = flights[id], !(flight.scope.interactive && active?.id == id) else {
             lock.unlock()
             return
         }

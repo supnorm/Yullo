@@ -599,3 +599,10 @@ enum CloudSpeechProviders {
                 || (data[data.startIndex] == 0xff && data[data.startIndex + 1] & 0xe0 == 0xe0))
     }
 }
+
+// A missing or refused key is told, with its fix, instead of read by a Mac voice
+// without a word; an unreachable service still falls back.
+extension CloudSpeechError: CoreFallbackError {
+    var isKeyProblem: Bool { self == .key || self == .http(401) || self == .http(403) }
+    var allowsAutomaticFallback: Bool { !isKeyProblem }
+}

@@ -2,14 +2,20 @@ import Foundation
 
 // Websites as dictation sees them: a host, read for one recording and never kept.
 public enum CoreWebsite {
-    // The browsers whose page address is read through Accessibility.
-    public static let browserBundleIDs: Set<String> = [
-        "com.apple.safari", "com.google.chrome", "company.thebrowser.browser", "com.microsoft.edgemac",
-        "com.brave.browser", "org.mozilla.firefox"
-    ]
+    // The browsers whose page address is read through Accessibility, with their
+    // beta, developer and nightly channels.
+    public static let browserBundleIDs: Set<String> = chromiumBundleIDs.union([
+        "com.apple.safari", "com.apple.safaritechnologypreview", "com.kagi.kagimacos",
+        "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+        "app.zen-browser.zen"
+    ])
     // Chromium browsers expose their pages to Accessibility only when asked.
     public static let chromiumBundleIDs: Set<String> = [
-        "com.google.chrome", "company.thebrowser.browser", "com.microsoft.edgemac", "com.brave.browser"
+        "com.google.chrome", "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
+        "org.chromium.chromium", "company.thebrowser.browser", "company.thebrowser.dia",
+        "com.microsoft.edgemac", "com.microsoft.edgemac.beta", "com.microsoft.edgemac.dev",
+        "com.microsoft.edgemac.canary", "com.brave.browser", "com.brave.browser.beta", "com.brave.browser.nightly",
+        "com.vivaldi.vivaldi", "com.operasoftware.opera", "com.operasoftware.operagx"
     ]
     public static func isBrowser(_ bundleID: String?) -> Bool {
         bundleID.map { browserBundleIDs.contains($0.lowercased()) } ?? false
