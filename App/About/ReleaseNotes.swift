@@ -24,6 +24,31 @@ enum ReleaseNotes {
     }
     static let entries: [Entry] = [
         .init(
+            version: "1.0.2", build: "3", isPreview: false,
+            titleKey: "What’s new",
+            leadKey: "Replace works in many more apps, and setting up no longer asks for an API key.",
+            features: [
+                .init(
+                    titleKey: "Replace in many more apps",
+                    detailKey:
+                        "Replace now works in many more apps, and you can correct the result by hand in the review before it goes in."
+                ),
+                .init(
+                    titleKey: "Set up without an API key",
+                    detailKey:
+                        "The guide sets up writing with Apple’s model or an app you already have, so no API key is needed."
+                ),
+                .init(
+                    titleKey: "A better dictation pick",
+                    detailKey: "Yullo recommends the dictation model that fits the languages you speak."),
+                .init(
+                    titleKey: "Translation on the newest Macs",
+                    detailKey:
+                        "Translating on this Mac now works on the newest Macs too. If it still can’t run, Yullo tells you and offers another way."
+                )
+            ],
+            closingKey: "Your settings and history stay as they were."),
+        .init(
             version: "1.0.1", build: "2", isPreview: false,
             titleKey: "What’s new",
             leadKey: "Yullo now works in more apps, and on a new Mac from the first launch.",

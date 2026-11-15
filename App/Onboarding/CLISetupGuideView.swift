@@ -10,9 +10,16 @@ enum CLISetupCommand: String, CaseIterable, Identifiable {
     // Codex signs in to a file, the only sign-in Yullo's private Codex home can
     // use; the same literal as CLIProvider.signInCommand.
     var command: String { self == .codex ? "codex login -c cli_auth_credentials_store=file" : "claude auth login" }
-    // Each maker's own one-line install, as its install page gives it.
-    var install: String {
-        self == .codex ? "npm install -g @openai/codex" : "curl -fsSL https://claude.ai/install.sh | bash"
+    // Each maker's own one-line install, as its install page gives it. Claude Code's installer
+    // needs nothing else; Codex CLI's needs npm, else Homebrew; nil when this Mac has neither.
+    func install(has tool: (String) -> Bool) -> String? {
+        switch self {
+        case .claude: return "curl -fsSL https://claude.ai/install.sh | bash"
+        case .codex:
+            if tool("npm") { return "npm install -g @openai/codex" }
+            if tool("brew") { return "brew install --cask codex" }
+            return nil
+        }
     }
     var guide: URL {
         URL(

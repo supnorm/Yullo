@@ -278,6 +278,8 @@ enum AppleWriter {
 // What Settings shows; tests and renders set another state.
 @MainActor enum AppleWriterStatus {
     static var availability: () -> CoreAppleWriterAvailability = AppleWriterSystem.availability
+    // Apple Intelligence & Siri in System Settings; checks count the press instead.
+    static var openSettings: () -> Void = { NSWorkspace.shared.open(AppleWriterPresentation.settingsURL) }
 }
 
 // The wording for each state, shared by Write with, the chooser and errors.

@@ -122,7 +122,7 @@ enum ModelLibraryError: Error, LocalizedError, Equatable {
         case .invalidHash: return "The downloaded model couldn’t be verified. Download it again."
         case .busy: return "This model is already downloading."
         case .inUse: return "This model is in use. Try again when it finishes."
-        case .downloadFailed: return "Couldn’t download the model. Check your internet connection and try again."
+        case .downloadFailed: return "Couldn’t download the model. Check your internet connection."
         case .storageFull:
             return "Not enough free space to download this model. Free up space on this Mac and try again."
         case .storageUnavailable:

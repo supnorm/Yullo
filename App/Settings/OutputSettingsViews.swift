@@ -632,6 +632,17 @@ struct OutputShortcutAddSheet: View {
 // Claude Code and Codex CLI found on this Mac, offered by name in Write with and
 // Translate with while no command-line tool is set up. Finding them runs only
 // --version/--help; choosing one fills in its path and a suggested model.
+extension CLISetupCommand {
+    // Whether an installer is on this Mac, where a shell or Node manager puts it; checks pass their own.
+    nonisolated(unsafe) static var hasTool: (String) -> Bool = { tool in
+        CLIClient.installDirectories(home: FileManager.default.homeDirectoryForCurrentUser).contains {
+            FileManager.default.isExecutableFile(atPath: $0 + "/" + tool)
+        }
+    }
+    // The install line that works on this Mac, or nil.
+    var install: String? { install(has: Self.hasTool) }
+}
+
 @MainActor final class InstalledCLIs: ObservableObject {
     #if YULLO_TESTING
         static var shared = InstalledCLIs(find: { [] })
@@ -799,7 +810,7 @@ struct WriteWithRow: View {
                 }
             })
     }
-    // Apple · on device where it can never run here: listed, not choosable, with the reason.
+    // Apple · on this Mac where it can never run here: listed, not choosable, with the reason.
     @ViewBuilder private func choice(_ engine: String) -> some View {
         let availability = AppleWriterStatus.availability()
         if engine == "apple", draft.voiceRefinementEngine != "apple", !availability.canBecomeReady {
@@ -904,7 +915,7 @@ struct AppleWriterStatusLine: View {
                     switch availability {
                     case .intelligenceOff:
                         Button(L10n.tr("Open Settings…")) {
-                            NSWorkspace.shared.open(AppleWriterPresentation.settingsURL)
+                            AppleWriterStatus.openSettings()
                         }
                         .buttonStyle(.link)
                     case .modelNotReady: EmptyView()
@@ -952,7 +963,7 @@ struct AppleModelServiceRow: View {
             caption: AppleWriterPresentation.status(availability) ?? L10n.tr("Ready")
         ) {
             if availability == .intelligenceOff {
-                Button(L10n.tr("Open Settings…")) { NSWorkspace.shared.open(AppleWriterPresentation.settingsURL) }
+                Button(L10n.tr("Open Settings…")) { AppleWriterStatus.openSettings() }
             }
         }
         .appleAvailability($availability)
@@ -991,6 +1002,8 @@ struct AppleWriterFallbackRow: View {
     // The key goes where Settings keeps it: Keychain, under the API's address.
     var saveKey: (_ key: String, _ endpoint: String) throws -> Void
     var testAPI: (_ endpoint: String, _ model: String, _ key: String) async throws -> String
+    // What the chooser uses unless a check passes its own: the live effects.
+    static var current = live
     static let live = WritingServiceSetupEffects(
         copy: { text in
             NSPasteboard.general.clearContents()
@@ -1028,7 +1041,7 @@ struct WritingServiceChooser: View {
     let close: () -> Void
     // Ollama's state on this Mac; checks pass their own answer.
     var ollamaStatus: @MainActor (String) async -> OllamaClient.Status = { await OllamaClient.shared.status(host: $0) }
-    var effects = WritingServiceSetupEffects.live
+    var effects = WritingServiceSetupEffects.current
     // Checks open the API form already filled: address, model and key.
     var apiPrefill: (url: String, model: String, key: String)? = nil
     // In the guide: the same rows in its own card, without the sheet's title and Cancel,
@@ -1036,6 +1049,8 @@ struct WritingServiceChooser: View {
     var inline = false
     var shown: Set<String>? = nil
     var opensAPIForm = false
+    // The guide's lead without a writer: the command-line tools to get come before Ollama.
+    var toolsFirst = false
     // Set up here, in place: the API's form opens under its row.
     @State private var apiOpen = false
     @State private var apiURL = ""
@@ -1075,6 +1090,7 @@ struct WritingServiceChooser: View {
                 Text(L10n.tr("Choose a writing service")).font(.system(size: 17, weight: .semibold))
             }
             VStack(alignment: .leading, spacing: 10) {
+                if toolsFirst { toolRows }
                 ForEach(
                     kinds.filter {
                         ($0.engine != "cli" || (cliRows.isEmpty && installed.missing.isEmpty))
@@ -1091,7 +1107,7 @@ struct WritingServiceChooser: View {
                         } else if kind.engine == "apple" {
                             if apple == .intelligenceOff {
                                 Button(L10n.tr("Open Settings…")) {
-                                    NSWorkspace.shared.open(AppleWriterPresentation.settingsURL)
+                                    AppleWriterStatus.openSettings()
                                 }
                             }
                         } else if kind.engine == "ollama" {
@@ -1123,15 +1139,7 @@ struct WritingServiceChooser: View {
                     }
                     if kind.engine == "api", apiOpen, !ready.contains("api") { apiForm }
                 }
-                // Command-line tools in one fixed order, each as it stands: in use or ready,
-                // signed out, or not installed, so no row moves as its state changes.
-                ForEach(shown?.contains("cli") ?? true ? InstalledCLIs.order : [], id: \.self) { provider in
-                    if let setup = cliRows.first(where: { $0.provider == provider }) {
-                        toolRow(setup)
-                    } else if installed.missing.contains(provider) {
-                        installRow(provider)
-                    }
-                }
+                if !toolsFirst { toolRows }
                 if let issue {
                     Text(issue).font(.system(size: 12)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1170,6 +1178,18 @@ struct WritingServiceChooser: View {
             .onDisappear { cancelAdd() }
     }
     private var apple: CoreAppleWriterAvailability { AppleWriterStatus.availability() }
+    // Command-line tools in one fixed order, each as it stands: in use or ready,
+    // signed out, or not installed, so no row moves as its state changes.
+    private var toolRows: some View {
+        ForEach(shown?.contains("cli") ?? true ? InstalledCLIs.order : [], id: \.self) { provider in
+            if let setup = cliRows.first(where: { $0.provider == provider }) {
+                toolRow(setup)
+            } else if installed.missing.contains(provider), CLISetupCommand(rawValue: provider.rawValue)?.install != nil
+            {
+                installRow(provider)
+            }
+        }
+    }
     @ViewBuilder private func toolRow(_ setup: CLIConfiguration) -> some View {
         // Titled by the tool itself; the kind and its model below.
         let signed = installed.signedIn[setup.provider]
@@ -1356,6 +1376,14 @@ struct WritingServiceChooser: View {
         if engine == "ollama", !ready.contains(engine), case .running(let models) = ollama, let first = models.first {
             return first.name
         }
+        // Ollama's own state, in the words Settings › Services uses for it.
+        if engine == "ollama", !ready.contains(engine) {
+            switch ollama {
+            case .notInstalled: return L10n.tr("Not installed")
+            case .notRunning: return L10n.tr("Not running")
+            default: break
+            }
+        }
         return ready.contains(engine)
             ? WritingServicePresentation.title(engine, preferences: draft) : L10n.tr("Not set up")
     }
@@ -1423,6 +1451,8 @@ struct TranslateWithRow: View {
     @ObservedObject var installedTools = InstalledCLIs.shared
     // The chosen model's ratings under the row (Translation page).
     var showsDetails = true
+    // The guide: model names without their quantization ("· Q4"), which a new user can't read.
+    var plainNames = false
     // With one language the translator is only for text in others.
     static func caption(oneLanguage: Bool) -> String {
         L10n.tr(oneLanguage ? "For text in other languages." : "For Translation and dictation in another language.")
@@ -1434,7 +1464,7 @@ struct TranslateWithRow: View {
     private static let localPrefix = "local:"
     static func title(_ engine: String, preferences: Preferences) -> String {
         switch engine {
-        case "apple": return L10n.tr("Apple · on device")
+        case "apple": return L10n.tr("Apple · on this Mac")
         case "local": return localTitle(preferences.localTranslationModelID)
         case "ollama", "api", "cli": return WritingServicePresentation.title(engine, preferences: preferences)
         default: return L10n.tr("Choose a service")
@@ -1445,6 +1475,16 @@ struct TranslateWithRow: View {
             ?? L10n.tr("Local model")
     }
     private var installed: [InstalledLocalModel] { models.installed.filter { $0.task == .translation } }
+    private func shown(_ name: String) -> String { plainNames ? Self.plainName(name) : name }
+    // "Hy-MT2 1.8B · Q4" → "Hy-MT2 1.8B": the last part goes when it is only a quantization.
+    static func plainName(_ name: String) -> String {
+        var parts = name.components(separatedBy: " · ")
+        guard parts.count > 1, let last = parts.last, last.first == "Q",
+            last.dropFirst().first?.isNumber == true
+        else { return name }
+        parts.removeLast()
+        return parts.joined(separator: " · ")
+    }
     private var selection: Binding<String> {
         Binding(
             get: { draft.engine == "local" ? Self.localPrefix + draft.localTranslationModelID : draft.engine },
@@ -1478,11 +1518,11 @@ struct TranslateWithRow: View {
                             if !installed.contains(where: { $0.id == draft.localTranslationModelID }),
                                 draft.engine == "local"
                             {
-                                Text(Self.localTitle(draft.localTranslationModelID))
+                                Text(shown(Self.localTitle(draft.localTranslationModelID)))
                                     .tag(Self.localPrefix + draft.localTranslationModelID)
                             }
                             ForEach(installed) { model in
-                                Text(model.name).tag(Self.localPrefix + model.id)
+                                Text(shown(model.name)).tag(Self.localPrefix + model.id)
                             }
                         } else {
                             Text(Self.title(engine, preferences: draft)).tag(engine)

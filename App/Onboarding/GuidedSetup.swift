@@ -360,30 +360,57 @@ enum GuidedTranslationOffer {
     }
 }
 
-// The writer the guide recommends on this Mac: Apple's model where it runs here, else, where
-// Yullo may work online, a command-line tool installed and not known to be signed out. Nil: the
-// guide leads with the service that fits Where Yullo works (Ollama on this Mac only, else an API).
+// What leads the Writing step, in this order: Apple's model where it runs here (chosen for
+// the person, nothing to set up); else, where Yullo may work online, a command-line tool
+// installed and not known to be signed out (Use, no key); else Apple's model when it only
+// needs turning on or is still downloading (Open Settings…); else a tool or Ollama to get.
+// An online service's key is never the lead: it waits under Other services.
 enum GuidedWriterRecommendation: Equatable {
-    case apple, cli(CLIConfiguration)
+    case apple, cli(CLIConfiguration), appleSettings(CoreAppleWriterAvailability), getOne
 
     static func make(
         apple: CoreAppleWriterAvailability, installed: [CLIConfiguration], signedIn: [CLIProvider: Bool] = [:],
         onDeviceOnly: Bool = false
-    ) -> Self? {
+    ) -> Self {
         if apple == .available { return .apple }
-        guard !onDeviceOnly else { return nil }
-        return installed.first { signedIn[$0.provider] != false }.map(Self.cli)
+        if !onDeviceOnly, let setup = installed.first(where: { signedIn[$0.provider] != false }) {
+            return .cli(setup)
+        }
+        if apple.canBecomeReady { return .appleSettings(apple) }
+        return .getOne
     }
-    var title: String {
+    // Apple's model is the writer to keep while nothing else is set up: it works now, or
+    // once Apple Intelligence is on, without coming back to the guide.
+    var choosesApple: Bool {
         switch self {
-        case .apple: return L10n.tr("Apple Foundation Model")
-        case .cli(let setup): return setup.provider.displayName
+        case .apple, .appleSettings: return true
+        case .cli, .getOne: return false
         }
     }
-    var caption: String {
+    // The lead row's one button, when it has one.
+    var hasAction: Bool { self != .getOne }
+    var title: String {
+        switch self {
+        case .apple, .appleSettings: return L10n.tr("Apple Foundation Model")
+        case .cli(let setup): return setup.provider.displayName
+        case .getOne: return ""
+        }
+    }
+    func caption(signedIn: Bool?) -> String {
         switch self {
         case .apple: return L10n.tr("Runs on this Mac")
-        case .cli: return L10n.tr("Command-line tool")
+        case .cli: return L10n.tr(signedIn == true ? "Signed in · no key needed" : "Command-line tool")
+        case .appleSettings(let state): return AppleWriterPresentation.status(state) ?? ""
+        case .getOne: return ""
+        }
+    }
+    // The short line under Open Settings…: what to do there, or that nothing is left to do.
+    var note: String? {
+        switch self {
+        case .appleSettings(.modelNotReady): return L10n.tr("Yullo uses it once the download finishes.")
+        case .appleSettings: return L10n.tr("Yullo uses it as soon as it’s on.")
+        case .getOne: return L10n.tr("Paste a command in Terminal, then come back.")
+        case .apple, .cli: return nil
         }
     }
 }

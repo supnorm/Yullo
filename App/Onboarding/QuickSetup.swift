@@ -94,6 +94,9 @@ enum QuickSetupModelState: Equatable {
     @Published private(set) var verificationErrors: [String: String] = [:]
     // Hardware-fit suggestions marked beside choices; they never select a model.
     @Published private(set) var recommendedIDs: [ModelTask: String] = [:]
+    // Each recommendation and the languages it was picked for, for its one-line reason.
+    @Published private(set) var recommendations: [ModelTask: (pick: ModelHardwareRecommendation, languages: [String])] =
+        [:]
     // Writing: Write with as it is when it can write on the chosen route;
     // otherwise a writer that can is suggested here, for review before Apply.
     @Published private(set) var writer: String
@@ -269,6 +272,13 @@ enum QuickSetupModelState: Equatable {
             task: .translation, installed: installed, fallback: text?.modelID ?? "hy-mt2-18b-q4")
         guard !Task.isCancelled, preparationRevision == expected else { return }
         recommendedIDs = [.dictation: recognition?.modelID, .translation: text?.modelID].compactMapValues { $0 }
+        let spoken =
+            preferences.voiceRecognitionLanguage == "auto"
+            ? preferences.modelSuggestionLanguageIDs : [preferences.voiceRecognitionLanguage]
+        var picks: [ModelTask: (pick: ModelHardwareRecommendation, languages: [String])] = [:]
+        if let recognition { picks[.dictation] = (recognition, spoken) }
+        if let text { picks[.translation] = (text, preferences.modelSuggestionLanguageIDs) }
+        recommendations = picks
         if let dictation, let translation { plan = QuickSetupPlan(dictation: dictation, translation: translation) }
         refreshVoices()
         preparing = false
@@ -282,7 +292,7 @@ enum QuickSetupModelState: Equatable {
     // Apple Speech needs no model download, but its language may need one from macOS.
     static var appleSpeech: QuickSetupModelChoice {
         .init(
-            id: VoiceRecognitionSettings.appleModelID, name: L10n.tr("Apple Speech · on device"), sizeBytes: 0,
+            id: VoiceRecognitionSettings.appleModelID, name: L10n.tr("Apple Speech · on this Mac"), sizeBytes: 0,
             task: .dictation)
     }
     func choices(for task: ModelTask) -> [QuickSetupModelChoice] {

@@ -1,0 +1,80 @@
+--- a/ggml-metal-device.m
++++ b/ggml-metal-device.m
+@@ -96,7 +96,20 @@
+     free(pipeline);
+ }
+ 
++// Yullo: a kernel missing from the compiled libraries leaves a NULL pipeline. Reading
++// it crashed the process; now the graph fails instead (ggml_metal_take_missing_pipeline),
++// and the work that needed it is not dispatched.
++static atomic_bool ggml_metal_missing_pipeline = false;
++
++bool ggml_metal_take_missing_pipeline(void) {
++    return atomic_exchange(&ggml_metal_missing_pipeline, false);
++}
++
+ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_with_params pipeline) {
++    if (!pipeline.pipeline) {
++        atomic_store(&ggml_metal_missing_pipeline, true);
++        return 1024;
++    }
+     return pipeline.pipeline->obj.maxTotalThreadsPerThreadgroup;
+ }
+ 
+@@ -831,6 +844,7 @@
+ 
+ struct ggml_metal_encoder {
+     id<MTLComputeCommandEncoder> obj;
++    bool missing_pipeline; // Yullo: the current pipeline is missing; skip its dispatches
+ };
+ 
+ ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
+@@ -865,8 +879,11 @@
+ }
+ 
+ void ggml_metal_encoder_set_pipeline(ggml_metal_encoder_t encoder, struct ggml_metal_pipeline_with_params pipeline) {
++    encoder->missing_pipeline = !pipeline.pipeline;
+     if (!pipeline.pipeline) {
+-        GGML_ABORT("%s: nil Metal pipeline (missing kernel; see compile_pipeline log above)\n", __func__);
++        GGML_LOG_ERROR("%s: nil Metal pipeline (missing kernel; see compile_pipeline log above)\n", __func__);
++        atomic_store(&ggml_metal_missing_pipeline, true);
++        return;
+     }
+ 
+     [encoder->obj setComputePipelineState:pipeline.pipeline->obj];
+@@ -888,6 +905,9 @@
+ }
+ 
+ void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
++    if (encoder->missing_pipeline) {
++        return;
++    }
+     [encoder->obj dispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2) threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
+ }
+ 
+--- a/ggml-metal-context.m
++++ b/ggml-metal-context.m
+@@ -12,6 +12,9 @@
+ 
+ #import <Metal/Metal.h>
+ 
++// Yullo: set when an encoded op found no pipeline for its kernel (ggml-metal-device.m).
++bool ggml_metal_take_missing_pipeline(void);
++
+ #undef MIN
+ #undef MAX
+ #define MIN(a, b) ((a) < (b) ? (a) : (b))
+@@ -593,6 +596,13 @@
+         }
+ 
+         dispatch_apply(n_cb, ctx->d_queue, ctx->encode_async);
++
++        // Yullo: a missing kernel fails this graph, and the backend, as a failed command buffer does.
++        if (ggml_metal_take_missing_pipeline()) {
++            GGML_LOG_ERROR("%s: a Metal kernel is missing; failing the graph\n", __func__);
++            ctx->has_error = true;
++            return GGML_STATUS_FAILED;
++        }
+ 
+         // for debugging: block until graph is computed
+         //[ctx->cmd_buf_last waitUntilCompleted];

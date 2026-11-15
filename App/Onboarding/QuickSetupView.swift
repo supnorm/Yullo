@@ -397,7 +397,11 @@ struct QuickSetupView: View {
     }
     @ViewBuilder private func modelDetails(_ choice: QuickSetupModelChoice, title: String) -> some View {
         modelPicker(choice, title: title)
-        ModelRatingSummary(modelID: choice.id, recommended: setup.recommendedIDs[choice.task] == choice.id)
+        ModelRatingSummary(
+            modelID: choice.id, recommended: setup.recommendedIDs[choice.task] == choice.id,
+            reason: setup.recommendations[choice.task].map {
+                ModelCatalogPresentation.recommendationLine($0.pick, task: choice.task, languageIDs: $0.languages)
+            })
         Button(L10n.tr("Browse local models…")) {
             browseModels(choice.task == .translation ? .translation : .dictation)
         }.buttonStyle(.link).font(.system(size: 12)).disabled(applying)

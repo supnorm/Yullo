@@ -134,7 +134,7 @@ struct AppleSpeechSettingsBackend: Sendable {
     }
     static func choices(selected: String, installed: [InstalledLocalModel], recommendedID: String?) -> [Item] {
         let models = installed.filter { $0.task == .dictation }
-        var items = [Item(tag: VoiceRecognitionSettings.appleModelID, title: L10n.tr("Apple Speech · on device"))]
+        var items = [Item(tag: VoiceRecognitionSettings.appleModelID, title: L10n.tr("Apple Speech · on this Mac"))]
         // A saved choice that is neither here nor offered below stays visible.
         if selected != VoiceRecognitionSettings.appleModelID && !models.contains(where: { $0.id == selected })
             && !available(installed: installed).contains(where: { $0.id == selected })
@@ -170,10 +170,11 @@ struct AppleSpeechSettingsBackend: Sendable {
     }
     static func downloadTitle(_ id: String) -> String { L10n.format("Download (%@)", size(id)) }
     static func keptRecognizerNote(_ selected: String, installed: [InstalledLocalModel]) -> String {
+        // A saved model that isn't downloaded either: Apple Speech recognizes meanwhile.
         let name =
             selected == VoiceRecognitionSettings.appleModelID
             ? L10n.tr("Apple Speech")
-            : installed.first { $0.id == selected }?.name ?? L10n.tr("Local model")
+            : installed.first { $0.id == selected }?.name ?? L10n.tr("Apple Speech")
         return L10n.format("Dictation uses %@ until it’s downloaded.", name)
     }
     static func progressLabel(_ progress: ModelDownloadProgress?) -> String {
@@ -193,9 +194,12 @@ struct AppleSpeechSettingsBackend: Sendable {
 @MainActor final class RecognitionModelDownloadChoice: ObservableObject {
     @Published private(set) var pendingID: String?
     @Published private(set) var downloadingID: String?
+    // Set once the person picks from the menu: the recommendation is no longer offered.
+    @Published private(set) var chosen = false
     private var generation = UUID()
 
     func pick(_ id: String, installed: Bool, models: VoiceModelStore, selection: Binding<String>) {
+        chosen = true
         generation = UUID()
         downloadingID = nil
         if installed || id == selection.wrappedValue {
@@ -206,6 +210,12 @@ struct AppleSpeechSettingsBackend: Sendable {
             // A download already under way, from the Model library, still counts.
             if models.downloads[id] != nil { download(id, models: models, selection: selection) }
         }
+    }
+    // The recommended model offered in the default's place: downloading it makes it the
+    // recognizer once installed, unless the person picked something else meanwhile.
+    func downloadOffer(_ id: String, models: VoiceModelStore, selection: Binding<String>) {
+        pendingID = id
+        download(id, models: models, selection: selection)
     }
     func download(_ id: String, models: VoiceModelStore, selection: Binding<String>) {
         let baseline = selection.wrappedValue
@@ -247,14 +257,28 @@ struct RecognitionModelPicker: View {
     private func isInstalled(_ id: String) -> Bool {
         id == VoiceRecognitionSettings.appleModelID || installed.contains { $0.id == id }
     }
-    // The pending choice shows until it is installed or replaced.
+    // The pending choice shows until it is installed or replaced. While the saved model is the
+    // untouched default and not downloaded, the model recommended for these languages on this
+    // Mac is offered in its place (a fresh Mac shows the best pick, not the default).
     private var shownID: String {
-        guard let pending = download.pendingID, !isInstalled(pending) else { return selected }
-        return pending
+        if let pending = download.pendingID, !isInstalled(pending) { return pending }
+        return offeredID ?? selected
+    }
+    private var offeredID: String? {
+        guard !download.chosen, download.pendingID == nil, selected == ModelLibrary.defaultModelID,
+            !isInstalled(selected), let id = recommendation?.modelID, id != selected, !isInstalled(id)
+        else { return nil }
+        return id
+    }
+    private var recommendation: ModelHardwareRecommendation? {
+        hardware.flatMap {
+            ModelCatalogPresentation.recommendation(
+                for: .dictation, languageIDs: languageIDs, profile: $0, installed: models.installed)
+        }
     }
     private var choiceLabel: String {
         shownID == VoiceRecognitionSettings.appleModelID
-            ? L10n.tr("Apple Speech · on device")
+            ? L10n.tr("Apple Speech · on this Mac")
             : ModelCatalogPresentation.choiceLabel(id: shownID, task: .dictation, installed: installed)
     }
     private var menuSelection: Binding<String> {
@@ -269,10 +293,8 @@ struct RecognitionModelPicker: View {
             })
     }
     var body: some View {
-        let recommendedID = hardware.flatMap {
-            ModelCatalogPresentation.recommendation(
-                for: .dictation, languageIDs: languageIDs, profile: $0, installed: models.installed)?.modelID
-        }
+        let pick = recommendation
+        let recommendedID = pick?.modelID
         let downloads = RecognitionModelMenu.downloads(installed: models.installed, recommendedID: recommendedID)
         let shown = shownID
         VStack(alignment: .leading, spacing: 4) {
@@ -292,7 +314,11 @@ struct RecognitionModelPicker: View {
                     Text(L10n.tr("Browse models…")).tag(RecognitionModelMenu.libraryTag)
                 }.labelsHidden().pickerStyle(.menu).settingsControlWidth().help(choiceLabel)
             }
-            ModelRatingSummary(modelID: shown, recommended: shown == recommendedID)
+            ModelRatingSummary(
+                modelID: shown, recommended: shown == recommendedID,
+                reason: pick.map {
+                    ModelCatalogPresentation.recommendationLine($0, task: .dictation, languageIDs: languageIDs)
+                })
             if !isInstalled(shown), ModelLibrary.catalog.contains(where: { $0.id == shown && $0.task == .dictation }) {
                 downloadStatus(shown)
             }
@@ -327,7 +353,11 @@ struct RecognitionModelPicker: View {
                     Text(L10n.tr("Not downloaded")).foregroundStyle(.secondary)
                     Spacer(minLength: 8)
                     Button(RecognitionModelMenu.downloadTitle(id)) {
-                        download.download(id, models: models, selection: $selected)
+                        if id == offeredID {
+                            download.downloadOffer(id, models: models, selection: $selected)
+                        } else {
+                            download.download(id, models: models, selection: $selected)
+                        }
                     }
                     .controlSize(.small).accessibilityIdentifier("recognition-model-download-action")
                 }

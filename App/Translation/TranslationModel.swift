@@ -90,6 +90,8 @@ enum TranslationRecoveryAction: Equatable {
         case CLIError.codexSignInFileMissing: return .cliSignIn(.codex)
         case CLIError.modelUnavailable: return service
         case LocalTranslationIssue.unavailable, LocalTranslationIssue.unsupportedLanguage: return service
+        // The model failed in every GPU mode and on the CPU: another service is the one fix.
+        case LocalTranslationIssue.failed: return .anotherService(writing: writing)
         case ModelLibraryError.unknownModel, ModelLibraryError.unavailable: return service
         case OllamaIssue.notRunning: return .openOllama
         case OllamaIssue.notInstalled, OllamaIssue.noModel, OllamaIssue.modelMissing: return service
@@ -225,6 +227,9 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     @Published private(set) var isTranslationPending = false
     @Published private(set) var outputIsStale = false
     @Published private(set) var needsTranslationRetry = false
+    // The local model couldn't run on this Mac in any mode: retrying can't help, so
+    // only the fix to choose another service is offered until the text or service changes.
+    @Published private(set) var localModelCouldNotRun = false
     @Published private(set) var translationRecoveryAction: TranslationRecoveryAction?
     // The side whose read aloud stopped for a saved key, read again once access is allowed.
     private var speechStoppedForKey: SpeechSide?
@@ -862,9 +867,10 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
     var canRetryTranslation: Bool {
         !isTranslationPending && (!canUseOutput || translationIncomplete) && hasSourceText
     }
-    var shouldOfferTranslationRetry: Bool { needsTranslationRetry && canRetryTranslation }
+    var shouldOfferTranslationRetry: Bool { needsTranslationRetry && canRetryTranslation && !localModelCouldNotRun }
     var shouldOfferManualTranslation: Bool {
         !automaticTranslationEnabled && configured && canRetryTranslation && !selectionRefinesOnly
+            && !localModelCouldNotRun
     }
     var shouldOfferTranslationRetryInFooter: Bool { automaticTranslationEnabled && shouldOfferTranslationRetry }
     var needsTranslationConnection: Bool {
@@ -910,6 +916,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         canRetryPreferredTranslation = false
         cancelReplacement()
         if needsTranslationRetry { needsTranslationRetry = false }
+        if localModelCouldNotRun { localModelCouldNotRun = false }
         debounceTask?.cancel()
         debounceTask = nil
         translationTask?.cancel()
@@ -1146,6 +1153,7 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
         outputHistoryRecordID = nil
         if !translated.isEmpty { outputIsStale = true }
         if needsTranslationRetry { needsTranslationRetry = false }
+        if localModelCouldNotRun { localModelCouldNotRun = false }
         isTranslationPending = true
         if speechSide != .source { stopSpeaking() }
         let id = UUID()
@@ -1252,6 +1260,8 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                 self.translating = false
                 self.isTranslationPending = false
                 self.needsTranslationRetry = true
+                self.localModelCouldNotRun =
+                    ((error as? TranslationRoute.Failure)?.api ?? error) as? LocalTranslationIssue == .failed
                 self.translationRecoveryAction = TranslationRecoveryAction.fixing(error, writing: false)
                 if let failure = error as? TranslationRoute.Failure {
                     let primary =

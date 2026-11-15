@@ -234,8 +234,15 @@ Request parseRequest(const std::string & request) {
         utf8(stringValue(input, @"source_name", 200)));
     return {text, taskData, profile, prompt, literal};
 }
+// How the helper uses the GPU. The app starts with Standard and, after a crash or a
+// runtime failure, retries one step safer each time: NoTensor (the GPU-specific
+// tensor-API kernels off), SafeGPU (flash attention off too), then CPU. Some GPU and
+// macOS pairs fail inside Metal kernels the build cannot run on every Mac.
+enum class Mode { Standard, NoTensor, SafeGPU, CPU };
+Mode mode = Mode::Standard;
 Model loadModel(const char * path) {
     auto modelParams = llama_model_default_params(); modelParams.n_gpu_layers = 99;
+    if (mode == Mode::CPU) modelParams.n_gpu_layers = 0;
     Model model(llama_model_load_from_file(path, modelParams), llama_model_free);
     if (!model) throw std::runtime_error("failed");
     return model;
@@ -274,6 +281,8 @@ NSString * translate(llama_model * model, const Request & request, ContextCache 
     contextParams.n_batch = 512; contextParams.n_ubatch = 512;
     contextParams.n_threads = 4; contextParams.n_threads_batch = 4;
     contextParams.no_perf = true;
+    // Flash attention selects separate Metal kernels; the safer modes leave them out.
+    if (mode == Mode::SafeGPU || mode == Mode::CPU) contextParams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     Context owned(nullptr, llama_free);
     llama_context * context = nullptr;
     if (cache && cache->context && cache->size >= needed) {
@@ -374,9 +383,22 @@ int main(int argc, char ** argv) {
     @autoreleasepool {
         try {
             std::setlocale(LC_NUMERIC, "C");
-            const bool serving = argc == 4 && std::string(argv[3]) == "--serve";
-            if ((argc != 3 && !serving) || std::string(argv[1]) != "--model" || argv[2][0] != '/')
+            // --model /path [--serve] [--no-tensor | --safe-gpu | --cpu]
+            bool serving = false;
+            for (int index = 3; index < argc; ++index) {
+                const std::string option = argv[index];
+                if (option == "--serve" && !serving && index == 3) serving = true;
+                else if (option == "--no-tensor" && mode == Mode::Standard && index == argc - 1) mode = Mode::NoTensor;
+                else if (option == "--safe-gpu" && mode == Mode::Standard && index == argc - 1) mode = Mode::SafeGPU;
+                else if (option == "--cpu" && mode == Mode::Standard && index == argc - 1) mode = Mode::CPU;
+                else throw std::runtime_error("invalid_request");
+            }
+            if (argc < 3 || argc > 5 || std::string(argv[1]) != "--model" || argv[2][0] != '/')
                 throw std::runtime_error("invalid_request");
+            // The safer modes skip the tensor-API kernels, the GPU-specific Metal
+            // path; CPU registers no Metal device. ggml reads both at backend start.
+            if (mode != Mode::Standard) setenv("GGML_METAL_TENSOR_DISABLE", "1", 1);
+            if (mode == Mode::CPU) setenv("GGML_METAL_DEVICES", "0", 1);
             // Runtime logs never print user text, and the only output protocol
             // is the JSON written below. There are no tools, HTTP or sessions.
             llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);

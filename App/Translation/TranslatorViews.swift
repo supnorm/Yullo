@@ -56,6 +56,11 @@ private struct SourceSpeechButton: View {
         )
         .help(L10n.tr(active ? "Stop reading aloud" : "Read source aloud"))
         .accessibilityLabel(L10n.tr(active ? "Stop reading aloud" : "Read source aloud"))
+        .background {
+            #if YULLO_TESTING
+                YulloActionPresentationProbe(title: "Read source aloud", action: { model.listen(.source) })
+            #endif
+        }
     }
 }
 
@@ -98,6 +103,11 @@ private struct TranslationSpeechButton: View {
             !model.canUseOutput || model.sourceVoiceUnavailable || model.sourceVoiceState != .idle
         )
         .help(label).accessibilityLabel(label)
+        .background {
+            #if YULLO_TESTING
+                YulloActionPresentationProbe(title: "Read translation aloud", action: { model.listen() })
+            #endif
+        }
     }
 }
 
@@ -115,6 +125,11 @@ private struct PronunciationSpeedButton: View {
             .accessibilityLabel(L10n.tr("Read slowly"))
             .accessibilityValue(L10n.tr(model.slowSpeech ? "On" : "Off"))
             .accessibilityAddTraits(.isToggle)
+            .background {
+                #if YULLO_TESTING
+                    YulloActionPresentationProbe(title: "Read slowly", action: { model.slowSpeech.toggle() })
+                #endif
+            }
     }
 }
 
@@ -301,7 +316,7 @@ private struct OutputActionButton: View {
                             : L10n.tr("Translate")
                     )
                     .fixedSize(horizontal: true, vertical: false)
-            } else {
+            } else if !model.output.isEmpty {
                 Button {
                     model.copyTranslation()
                 } label: {
@@ -616,15 +631,19 @@ struct SelectionView: View {
                             }.font(.system(size: 12)).frame(height: 28)
                         }
                         HStack(spacing: 12) {
-                            TranslationSpeechButton(model: model)
-                            PronunciationSpeedButton(model: model)
+                            // No result, no output actions: nothing to read, copy or put back.
+                            if !model.output.isEmpty {
+                                TranslationSpeechButton(model: model)
+                                PronunciationSpeedButton(model: model)
+                            }
                             Spacer(minLength: 2)
                             if !model.hasSameLanguageWritingContext {
                                 TranslationWritingActions(model: model, compact: true)
                             }
                             // Read-only page selections have no write path, so Replace is not offered;
                             // nor is it for a translation with part of the source left as it was.
-                            if model.selectionOffersReplacement && !model.translationIncomplete {
+                            if model.selectionOffersReplacement && !model.translationIncomplete && !model.output.isEmpty
+                            {
                                 // ↩ replaces here, so the button names it.
                                 Button {
                                     model.replaceSelection()
@@ -794,8 +813,11 @@ struct MainView: View {
                         ).frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         HStack(spacing: 10) {
-                            TranslationSpeechButton(model: model)
-                            PronunciationSpeedButton(model: model)
+                            // No result, no output actions: nothing to read or copy.
+                            if !model.output.isEmpty {
+                                TranslationSpeechButton(model: model)
+                                PronunciationSpeedButton(model: model)
+                            }
                             Spacer(minLength: 0)
                             TranslationWritingActions(model: model)
                             OutputActionButton(model: model)

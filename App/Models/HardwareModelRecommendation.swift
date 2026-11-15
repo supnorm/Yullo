@@ -86,6 +86,8 @@ struct ModelHardwareRecommendation: Equatable, Sendable {
     enum Reason: Equatable, Sendable { case balanced, compact, quality, livePreview, languageCoverage }
     let modelID: String
     let reason: Reason
+    // Dictation only: a secondary language the pick doesn't recognize, said beside it.
+    var missingLanguageIDs: [String] = []
 }
 
 // A small deterministic suggestion over the existing reviewed catalog. This
@@ -99,7 +101,21 @@ enum HardwareModelRecommendation {
     ) -> ModelHardwareRecommendation? {
         let memory = profile.physicalMemoryBytes.flatMap { $0 > 0 ? $0 : nil }
         let budget = memory.map { $0 / 2 }
-        let languages = Set(needs.languageIDs.compactMap { coverageID($0, task: needs.task) })
+        let ordered = needs.languageIDs.compactMap { coverageID($0, task: needs.task) }
+        let languages = Set(ordered)
+        // Dictation recognizes one language at a time: one uncommon secondary language never
+        // demotes the maintainer pick for the main language and the rest (balanced use only).
+        let pick = ModelDiscoveryCatalog.preferredModelIDs[needs.task]
+        func tolerance(_ candidate: ModelHardwareCandidate) -> Int {
+            needs.task == .dictation && needs.priority == .balanced && ordered.count > 1 && candidate.id == pick
+                ? 1 : 0
+        }
+        func missing(_ candidate: ModelHardwareCandidate) -> [String] {
+            let supported = Set(candidate.languageIDs.compactMap { coverageID($0, task: needs.task) })
+            return ordered.filter { !supported.contains($0) }.reduce(into: [String]()) {
+                if !$0.contains($1) { $0.append($1) }
+            }
+        }
         let matching = candidates.filter { candidate in
             guard candidate.task == needs.task, candidate.runtime.task == needs.task,
                 profile.availableRuntimes.contains(candidate.runtime), candidate.downloadBytes > 0,
@@ -107,8 +123,10 @@ enum HardwareModelRecommendation {
             else { return false }
             if candidate.requiresLanguageHint && !needs.allowsRequiredLanguageHint { return false }
             if let budget, candidate.estimatedWorkingMemoryBytes > budget { return false }
-            let supported = Set(candidate.languageIDs.compactMap { coverageID($0, task: needs.task) })
-            guard languages.isSubset(of: supported) else { return false }
+            let gaps = missing(candidate)
+            guard gaps.count <= tolerance(candidate), ordered.first.map({ !gaps.contains($0) }) ?? true else {
+                return false
+            }
             if !installedIDs.contains(candidate.id), let disk = profile.availableDiskBytes {
                 let (staging, overflow) = UInt64(candidate.downloadBytes).multipliedReportingOverflow(by: 2)
                 let (required, overheadOverflow) = staging.addingReportingOverflow(256 * 1_024 * 1_024)
@@ -144,10 +162,10 @@ enum HardwareModelRecommendation {
                 : needs.priority == .quality
                     ? .quality
                     : languages.isEmpty ? .balanced : .languageCoverage
-        return .init(modelID: selected.id, reason: reason)
+        return .init(modelID: selected.id, reason: reason, missingLanguageIDs: missing(selected))
     }
 
-    private static func coverageID(_ value: String, task: ModelTask) -> String? {
+    static func coverageID(_ value: String, task: ModelTask) -> String? {
         let code = value.replacingOccurrences(of: "_", with: "-").lowercased()
         guard code != "auto", !code.isEmpty else { return nil }
         if code == "zh-hant" || code.hasPrefix("zh-tw") || code.hasPrefix("zh-hk") {

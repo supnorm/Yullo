@@ -4,8 +4,6 @@
 "%1$@ will write %2$@ instead." = "%1$@ écrira plutôt : %2$@.";
 "%1$@ → %2$@" = "%1$@ → %2$@";
 "%@ copy" = "Copie de %@";
-"%@ doesn’t let Yullo edit this text. Paste the result there with ⌘V." = "%@ ne permet pas à Yullo de modifier ce texte. Collez-y le résultat avec ⌘V.";
-"%@ doesn’t let Yullo edit this text. Result copied: paste it with ⌘V." = "%@ ne permet pas à Yullo de modifier ce texte. Résultat copié : collez-le avec ⌘V.";
 "%@ has reached its usage limit." = "%@ a atteint sa limite d’utilisation.";
 "%@ isn’t in Ollama anymore." = "%@ n’est plus disponible dans Ollama.";
 "%@ isn’t one of your languages." = "%@ ne fait pas partie de vos langues.";
@@ -39,6 +37,7 @@
 "4 lines" = "4 lignes";
 "5 minutes" = "5 minutes";
 "7 days" = "7 jours";
+"A better dictation pick" = "Le bon modèle de dictée";
 "A compact alternative to the larger Whisper models." = "Une alternative compacte aux grands modèles Whisper.";
 "A compact, fast translation model." = "Un modèle de traduction compact et rapide.";
 "A format for each app, in Dictation settings." = "Un format pour chaque app, dans les réglages Dictée.";
@@ -125,6 +124,7 @@
 "Also recognizes 22 Chinese dialects." = "Reconnaît aussi 22 dialectes chinois.";
 "Also speaks more than 18 Chinese dialects." = "Parle aussi plus de 18 dialectes chinois.";
 "American English" = "Anglais américain";
+"Another app is keeping typing private, so Yullo can’t replace the text." = "Une autre app protège la saisie au clavier, Yullo ne peut donc pas remplacer le texte.";
 "Anywhere in text" = "Partout dans le texte";
 "App" = "Application";
 "App preferences" = "Préférences par app";
@@ -143,17 +143,18 @@
 "Apple Speech language" = "Langue de reconnaissance Apple";
 "Apple Speech needs a language download." = "La reconnaissance Apple nécessite le téléchargement du module de langue.";
 "Apple Speech recognizes one language at a time. For mixed languages, use a multilingual model." = "La reconnaissance Apple utilise une seule langue sélectionnée. Pour une entrée multilingue, utilisez un modèle multilingue.";
-"Apple Speech · on device" = "Reconnaissance Apple · sur l’appareil";
+"Apple Speech · on this Mac" = "Reconnaissance Apple · sur ce Mac";
 "Apple can’t translate this pair offline. Connect to the internet to use your API." = "Apple ne peut pas traduire cette paire hors ligne. Reconnectez-vous pour utiliser une API.";
 "Apple fallback doesn’t support this language pair." = "Le secours Apple ne prend pas en charge cette paire de langues.";
 "Apple fallback off" = "Secours Apple désactivé";
 "Apple fallback on" = "Secours Apple activé";
 "Apple fallback was also unavailable." = "Le secours Apple était également indisponible.";
+"Apple translates until it’s downloaded." = "Apple traduit jusqu’à la fin du téléchargement.";
 "Apple translation doesn’t use your personal vocabulary." = "La traduction Apple n’applique pas votre terminologie personnelle.";
 "Apple translation languages" = "Langues de traduction Apple";
 "Apple translation support. Language pairs may need a download." = "Langue prise en charge par la traduction Apple. Les paires de langues peuvent nécessiter un téléchargement.";
 "Apple translation, Apple Speech and macOS voices. Dictation types exactly what you say." = "Traduction Apple, reconnaissance Apple et voix macOS. La dictée saisit vos paroles telles que vous les prononcez.";
-"Apple · on device" = "Apple · sur l’appareil";
+"Apple · on this Mac" = "Apple · sur ce Mac";
 "Apple’s model can’t write in %@." = "Le modèle d’Apple n’écrit pas en %@.";
 "Apple’s model can’t write in this language." = "Le modèle d’Apple n’écrit pas cette langue.";
 "Apple’s model declined this text." = "Le modèle d’Apple a refusé ce texte.";
@@ -180,6 +181,7 @@
 "Back" = "Retour";
 "Back to Setup" = "Retour à la configuration";
 "Before" = "Avant";
+"Better %@ translation" = "Meilleure traduction en %@";
 "Bold text" = "Texte en gras";
 "Bottom bar" = "Barre inférieure";
 "Bottom bar when there’s no text field." = "Barre du bas s’il n’y a pas de champ de texte.";
@@ -200,7 +202,6 @@
 "Cancel refinement" = "Annuler la révision";
 "Cancel test" = "Annuler le test";
 "Cancel translation" = "Annuler la traduction";
-"Can’t edit here. Result copied: paste it with ⌘V." = "Modification impossible ici. Résultat copié : collez-le avec ⌘V.";
 "Casual message" = "Message décontracté";
 "Center on current screen" = "Centrer sur l’écran actuel";
 "Change shortcut, %@" = "Modifier le raccourci, %@";
@@ -263,6 +264,7 @@
 "Choose a valid date range." = "Choisissez une période valide.";
 "Choose a voice model file listed in Yullo’s catalog." = "Choisissez un fichier de modèle vocal figurant dans le catalogue de Yullo.";
 "Choose a voice or enter its voice ID." = "Choisissez une voix ou saisissez son identifiant.";
+"Choose a writer above first." = "Choisissez d’abord un service de rédaction ci-dessus.";
 "Choose a writing service" = "Choisir un service de rédaction";
 "Choose a writing service…" = "Choisir un service de rédaction…";
 "Choose an API or CLI connection to refine writing." = "Choisissez une connexion API ou CLI pour retravailler le texte.";
@@ -352,7 +354,7 @@
 "Couldn’t connect. Check the URL, network and model." = "Connexion impossible. Vérifiez l’URL, le réseau et le modèle.";
 "Couldn’t copy the command. Select and copy it above." = "Impossible de copier la commande. Sélectionnez-la ci-dessus pour la copier.";
 "Couldn’t copy. Try again." = "Copie impossible. Réessayez.";
-"Couldn’t download the model. Check your internet connection and try again." = "Le modèle n’a pas pu être téléchargé. Vérifiez votre connexion et réessayez.";
+"Couldn’t download the model. Check your internet connection." = "Le modèle n’a pas pu être téléchargé. Vérifiez votre connexion.";
 "Couldn’t edit this text." = "Impossible de modifier ce texte.";
 "Couldn’t finish recognition." = "Impossible de terminer la reconnaissance.";
 "Couldn’t finish the translation. Try again." = "La traduction n’a pas pu être terminée. Réessayez.";
@@ -422,6 +424,7 @@
 "Dictation Writes: %@" = "Format de dictée : %@";
 "Dictation Writes: %@ (%@)" = "Format de dictée : %@ (%@)";
 "Dictation needs attention" = "La saisie vocale a rencontré un problème";
+"Dictation needs the microphone." = "La dictée a besoin du micro.";
 "Dictation shortcut" = "Raccourci de dictée";
 "Dictation shortcut: %@" = "Raccourci de dictée : %@";
 "Dictation shortcuts" = "Raccourcis de dictée";
@@ -533,6 +536,7 @@
 "For %@, Yullo uses a Mac voice." = "Pour %@, Yullo utilise une voix du Mac.";
 "For Refine and formats like Email." = "Pour Retravailler et des formats comme E-mail.";
 "For Translation and dictation in another language." = "Pour la traduction et la dictée dans une autre langue.";
+"For dictation." = "Pour la dictée.";
 "For example: replying to my landlord in German, polite" = "Par exemple : réponse à mon propriétaire en allemand, poli";
 "For offline translation. Your settings don’t change." = "Pour traduire hors ligne. Vos réglages ne changent pas.";
 "For recordings longer than 30 seconds, choose Whisper, Qwen3 ASR or Parakeet in Dictation settings." = "Pour les enregistrements de plus de 30 secondes, choisissez Whisper, Qwen3 ASR ou Parakeet dans les réglages Dictée.";
@@ -676,7 +680,6 @@
 "Local model" = "Modèle local";
 "Local speech generation failed. Try another voice or model." = "La génération vocale locale a échoué. Essayez une autre voix ou un autre modèle.";
 "Local transcription failed. Try again or choose another model." = "La transcription locale a échoué. Réessayez ou choisissez un autre modèle.";
-"Local translation failed. Try another model." = "La traduction locale a échoué. Essayez un autre modèle.";
 "Local translation is still stopping. Try again in a moment." = "La traduction locale est en cours d’arrêt. Réessayez dans un instant.";
 "Made to fit you" = "Fait pour vous";
 "Mail" = "Mail";
@@ -828,6 +831,7 @@
 "Part of this wasn’t translated." = "Une partie n’a pas été traduite.";
 "Partial draft" = "Brouillon partiel";
 "Paste" = "Coller";
+"Paste a command in Terminal, then come back." = "Collez une commande dans Terminal, puis revenez.";
 "Paste a new key, or leave blank to keep the saved key" = "Nouvelle clé, ou vide pour garder l’actuelle";
 "Paste and run the command in Terminal to sign in." = "Collez et exécutez la commande dans Terminal pour vous connecter.";
 "Paste your key" = "Collez votre clé";
@@ -899,7 +903,11 @@
 "Recognition options" = "Options de reconnaissance";
 "Recognizer available" = "Modèle de dictée disponible";
 "Recommended" = "Recommandé";
+"Recommended for %1$@. It doesn’t recognize %2$@." = "Recommandé pour %1$@. Ne reconnaît pas %2$@.";
+"Recommended for %@ on this Mac." = "Recommandé pour %@ sur ce Mac.";
+"Recommended for this Mac." = "Recommandé pour ce Mac.";
 "Recommended: %@" = "Recommandé : %@";
+"Recommended: a smaller download for this Mac." = "Recommandé : un téléchargement plus léger pour ce Mac.";
 "Record Shortcut…" = "Enregistrer un raccourci…";
 "Record another instruction" = "Dicter une autre consigne";
 "Recording" = "Enregistrement";
@@ -945,12 +953,16 @@
 "Removes the saved key from this Mac. Your provider’s key stays active." = "Supprime la clé de ce Mac. Elle reste active chez votre fournisseur.";
 "Reopen Yullo from Applications or with your shortcut." = "Rouvrez Yullo depuis Applications ou utilisez votre raccourci global.";
 "Replace" = "Remplacer";
+"Replace in many more apps" = "Remplacer dans bien plus d’apps";
 "Replace in more apps" = "Remplacer dans plus d’apps";
+"Replace needs Accessibility." = "Le remplacement nécessite l’accès Accessibilité.";
 "Replace now works in Chrome, Google Docs and Slides, Obsidian and other apps built on Chrome." = "Remplacer fonctionne désormais dans Chrome, Google Docs et Slides, Obsidian et les autres apps basées sur Chrome.";
+"Replace now works in many more apps, and you can correct the result by hand in the review before it goes in." = "Remplacer fonctionne désormais dans bien plus d’apps, et vous pouvez corriger le résultat à la main dans l’aperçu avant qu’il soit inséré.";
 "Replace selected text" = "Remplacer le texte sélectionné";
 "Replace selection" = "Remplacer la sélection";
 "Replace the selection in the original app." = "Remplacer la sélection dans l’app d’origine.";
 "Replace this spelling" = "Graphie à remplacer";
+"Replace works in many more apps, and setting up no longer asks for an API key." = "Remplacer fonctionne dans bien plus d’apps, et la configuration ne demande plus de clé API.";
 "Replacing selection…" = "Remplacement de la sélection…";
 "Replacing text needs Accessibility access." = "Le remplacement du texte nécessite l’accès Accessibilité.";
 "Replacing…" = "Remplacement…";
@@ -970,6 +982,7 @@
 "Restricted" = "Restreint";
 "Result" = "Résultat";
 "Result actions" = "Actions du résultat";
+"Result copied." = "Résultat copié.";
 "Result status" = "État du résultat";
 "Result type" = "Type de résultat";
 "Resume recording" = "Reprendre l’enregistrement";
@@ -1020,6 +1033,7 @@
 "Search terms" = "Rechercher un terme";
 "Search voices" = "Rechercher des voix";
 "Seconds" = "Secondes";
+"Secure Keyboard Entry is on in %@, so Yullo can’t replace the text." = "La saisie sécurisée au clavier est activée dans %@, Yullo ne peut donc pas remplacer le texte.";
 "Select All" = "Tout sélectionner";
 "Select text first, then say how to change it." = "Sélectionnez du texte avant de dicter une consigne de modification.";
 "Select text first." = "Sélectionnez d’abord du texte.";
@@ -1044,6 +1058,7 @@
 "Set up another service…" = "Configurer un autre service…";
 "Set up command-line tools…" = "Configurer les outils en ligne de commande…";
 "Set up history…" = "Configurer l’historique…";
+"Set up without an API key" = "Configurer sans clé API";
 "Set up…" = "Configurer…";
 "Settings" = "Réglages";
 "Settings · ⌘," = "Réglages · ⌘,";
@@ -1081,6 +1096,7 @@
 "Sign-in command" = "Commande de connexion";
 "Sign-off" = "Formule de politesse";
 "Signature" = "Signature";
+"Signed in · no key needed" = "Connecté · aucune clé requise";
 "Situation" = "Situation";
 "Skip" = "Passer";
 "Social post" = "Publication pour réseaux sociaux";
@@ -1128,7 +1144,6 @@
 "Start selected text in edit mode" = "Ouvrir la sélection en mode édition";
 "Start the guide anytime in %@." = "Retrouvez le guide dans %@.";
 "Start voice translation" = "Démarrer la traduction vocale";
-"Start with your words" = "Commencez par vos mots";
 "Status is per direction. macOS shares these with other apps." = "L’état dépend du sens de traduction. macOS les partage avec les autres apps.";
 "Stop" = "Arrêter";
 "Stop reading aloud" = "Arrêter la lecture";
@@ -1182,10 +1197,12 @@
 "The edited text was cut off. Try a shorter selection." = "Le texte modifié a été tronqué. Choisissez un original plus court.";
 "The first-run guide now takes you through translation, writing, permissions and dictation, lets you try them as you go, and reopens from the menu where you left off." = "Le guide du premier lancement vous accompagne pour la traduction, la rédaction, les autorisations et la dictée, avec Essayer en chemin, et se rouvre depuis le menu là où vous l’aviez laissé.";
 "The full v3 model. Compare its quality and speed with Turbo." = "Le modèle v3 complet. Comparez sa qualité et sa latence à Turbo.";
+"The guide sets up writing with Apple’s model or an app you already have, so no API key is needed." = "Le guide configure l’écriture avec le modèle d’Apple ou une app que vous avez déjà, sans clé API.";
 "The heard-as phrase must differ from the preferred spelling." = "La formulation à corriger doit être différente de l’orthographe préférée.";
 "The insertion point changed. Copy the result when ready." = "Le point d’insertion a changé. Copiez le résultat lorsqu’il est prêt.";
 "The language button cycles through these in this order, then Same as I speak." = "Le bouton de langue les parcourt dans cet ordre, puis revient à « Même langue ».";
 "The language download couldn’t be completed." = "Le téléchargement des langues n’a pas pu aboutir.";
+"The local model couldn’t run on this Mac." = "Le modèle local n’a pas pu fonctionner sur ce Mac.";
 "The local model didn’t return a complete translation." = "Le modèle local n’a pas renvoyé de traduction complète.";
 "The local speech runtime is missing. Reinstall Yullo." = "Le moteur vocal local est manquant. Réinstallez Yullo.";
 "The local translation runtime is missing. Reinstall Yullo." = "Le moteur de traduction local est manquant. Réinstallez Yullo.";
@@ -1228,7 +1245,6 @@
 "They work however you installed them, and your own instructions for them stay out of Yullo’s requests." = "Ils fonctionnent quelle que soit leur installation, et vos propres instructions pour eux restent hors des requêtes de Yullo.";
 "Third-party notices" = "Mentions tierces";
 "This JSON document is too large to translate." = "Ce document JSON est trop volumineux pour être traduit.";
-"This app doesn’t let Yullo edit this text. Paste the result there with ⌘V." = "Cette app ne permet pas à Yullo de modifier ce texte. Collez-y le résultat avec ⌘V.";
 "This app preference changed. Close the editor and try again." = "Cette préférence d’app a changé. Fermez l’éditeur, puis réessayez.";
 "This application already has a preference." = "Cette app a déjà une préférence.";
 "This deletes every saved result, including results hidden by search or filters." = "Tous les résultats enregistrés seront supprimés, y compris ceux masqués par la recherche ou les filtres.";
@@ -1254,6 +1270,8 @@
 "This spelling already has an entry for the same use or target language." = "Cette orthographe possède déjà une entrée pour le même usage ou la même langue cible.";
 "This term changed. Close the editor and try again." = "Ce terme a changé. Fermez l’éditeur et réessayez.";
 "This text field doesn’t support direct insertion." = "Ce champ ne permet pas l’insertion directe.";
+"This text is read-only." = "Ce texte est en lecture seule.";
+"This text is read-only. Result copied: paste it with ⌘V." = "Ce texte est en lecture seule. Résultat copié : collez-le avec ⌘V.";
 "This text is too long for a CLI translation." = "Ce texte est trop long pour être traduit via le CLI.";
 "This text is too long for personal vocabulary processing." = "Ce texte est trop long pour appliquer le vocabulaire personnel.";
 "This text is too long for the local model. Try a shorter passage." = "Ce texte est trop long pour le modèle local. Essayez un passage plus court.";
@@ -1265,6 +1283,7 @@
 "This vocabulary entry could not be prepared." = "Cette entrée n’a pas pu être préparée.";
 "To" = "Vers";
 "To insert directly, click a text field before you start dictating." = "Pour insérer directement, cliquez dans un champ de texte avant de démarrer la saisie vocale.";
+"To replace the text, select it again." = "Pour remplacer le texte, sélectionnez-le à nouveau.";
 "To type into other apps, Yullo needs Accessibility." = "Pour écrire dans d’autres apps, Yullo a besoin de l’accessibilité.";
 "Today" = "Aujourd’hui";
 "Too many changes to show." = "Trop de modifications pour les afficher.";
@@ -1278,6 +1297,7 @@
 "Translate as" = "Traduire par";
 "Translate as I type" = "Traduire pendant la saisie";
 "Translate from" = "Langue source";
+"Translate into" = "Traduire en";
 "Translate into %@" = "Traduire en %@";
 "Translate now" = "Traduire maintenant";
 "Translate right away" = "Traduire tout de suite";
@@ -1291,6 +1311,7 @@
 "Translated with Apple until %@ is downloaded." = "Traduit avec Apple en attendant le téléchargement de %@.";
 "Translated with Apple. API key access was unavailable." = "Traduit avec Apple : la clé API était inaccessible.";
 "Translating" = "Traduction";
+"Translating on this Mac now works on the newest Macs too. If it still can’t run, Yullo tells you and offers another way." = "La traduction sur ce Mac fonctionne aussi sur les Mac les plus récents. Si elle ne peut toujours pas s’exécuter, Yullo vous le dit et propose une autre solution.";
 "Translating “%@”…" = "Traduction de « %@ »…";
 "Translating…" = "Traduction…";
 "Translation" = "Traduction";
@@ -1303,8 +1324,8 @@
 "Translation failed. Previous result kept." = "La traduction a échoué. Le résultat précédent est conservé.";
 "Translation follows as you type." = "La traduction suit au fil de la saisie.";
 "Translation model" = "Modèle de traduction";
+"Translation on the newest Macs" = "La traduction sur les Mac les plus récents";
 "Translation service" = "Service de traduction";
-"Translation target" = "Langue de traduction";
 "Translation term" = "Terme de traduction";
 "Translations, dictation and writing appear here." = "Vos traductions, dictées et textes rédigés apparaissent ici.";
 "Translator" = "Traducteur";
@@ -1315,10 +1336,12 @@
 "Try dictation" = "Essayer la dictée";
 "Try each on the sample." = "Essayez chacun sur l’exemple.";
 "Try one sentence" = "Dites une phrase";
+"Try works once Apple’s model is ready." = "L’essai fonctionnera dès que le modèle d’Apple sera prêt.";
 "Turn off" = "Désactiver";
 "Turn on" = "Activer";
 "Turn on Apple Intelligence…" = "Activer Apple Intelligence…";
 "Turn on Yullo in Accessibility settings. If it’s already on, remove Yullo with the – button, then add it again with +." = "Activez Yullo dans les réglages Accessibilité. S’il est déjà activé, supprimez Yullo avec le bouton –, puis ajoutez-le de nouveau avec +.";
+"Turn on Yullo in the list that opened." = "Activez Yullo dans la liste qui s’est ouverte.";
 "Turning your speech into text…" = "Transcription de votre voix…";
 "Tutorial" = "Guide d’utilisation";
 "Type a change" = "Tapez une modification";
@@ -1431,11 +1454,17 @@
 "Yullo" = "Yullo";
 "Yullo can’t find Codex CLI’s sign-in file. Run %@ in Terminal to sign in." = "Yullo ne trouve pas le fichier de connexion de Codex CLI. Exécutez %@ dans Terminal pour vous connecter.";
 "Yullo couldn’t confirm the insertion. Check the original app before using it again." = "L’insertion n’a pas pu être confirmée. Vérifiez l’app d’origine avant de réutiliser le résultat.";
+"Yullo couldn’t reach this text field." = "Yullo n’a pas pu atteindre ce champ de texte.";
+"Yullo couldn’t reach this text field. Result copied: paste it with ⌘V." = "Yullo n’a pas pu atteindre ce champ de texte. Résultat copié : collez-le avec ⌘V.";
+"Yullo doesn’t edit password fields." = "Yullo ne modifie pas les champs de mot de passe.";
 "Yullo lives in your menu bar and helps you write, in any app, without leaving your work." = "Yullo se loge dans la barre des menus et vous aide à écrire dans n’importe quelle app, sans quitter votre travail.";
 "Yullo now works in more apps, and on a new Mac from the first launch." = "Yullo fonctionne désormais dans plus d’apps, et sur un nouveau Mac dès la première ouverture.";
+"Yullo recommends the dictation model that fits the languages you speak." = "Yullo recommande le modèle de dictée adapté aux langues que vous parlez.";
 "Yullo sample voice" = "Voix d’exemple Yullo";
 "Yullo shortcuts" = "Raccourcis de Yullo";
 "Yullo stays in the menu bar after you close this window." = "Yullo reste dans la barre des menus quand vous fermez cette fenêtre.";
+"Yullo uses it as soon as it’s on." = "Yullo l’utilisera dès qu’il sera activé.";
+"Yullo uses it once the download finishes." = "Yullo l’utilisera une fois le téléchargement terminé.";
 "Yullo uses your microphone for local dictation and voice translation. Audio is processed on this Mac." = "Yullo utilise votre microphone pour la dictée locale et la traduction vocale. L’audio est traité sur ce Mac.";
 "Yullo window" = "Fenêtre Yullo";
 "Yullo works on this Mac only. API and CLI services are off." = "Yullo fonctionne uniquement sur ce Mac. Les services API et CLI sont désactivés.";

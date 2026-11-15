@@ -9,6 +9,7 @@ import hashlib
 import plistlib
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -168,6 +169,30 @@ for bundle in helper_bundles:
 speech_metal = (app / "Contents/Resources/default.metallib").read_bytes()
 require(speech_metal.startswith(b"MTLB"), "invalid speech Metal library")
 check_build_paths(speech_metal, "speech Metal library")
+# Every kernel each pinned backend can request is in the libraries shipped beside it.
+# A missing tensor flash-attention kernel was a NULL pipeline and a crash on M5 Macs;
+# this check needs no such GPU.
+project = Path(__file__).resolve().parents[1]
+def pinned_metal(script, variable, layout):
+    pin = re.search(rf"^{variable}=(\S+)$", (project / "scripts" / script).read_text(), re.M)
+    require(pin is not None, f"missing {variable} in {script}")
+    return project / ".runtime-source" / layout.format(pin.group(1))
+kernel_sources = {
+    "Contents/Helpers/LocalTranslation.bundle/Contents/Resources":
+        pinned_metal("build-llama-runtime.sh", "LLAMA_REVISION", "llama.cpp-{}/ggml/src/ggml-metal"),
+    # whisper.cpp and transcribe.cpp carry identical kernels (build.sh checks it).
+    "Contents/Helpers/LocalRecognition.bundle/Contents/Resources":
+        pinned_metal("build-transcribe-runtime.sh", "TRANSCRIBE_REVISION", "transcribe.cpp-{}/ggml/src/ggml-metal"),
+    "Contents/Resources":
+        pinned_metal("build-speech-runtime.sh", "SPEECH_REVISION", "audio.cpp-{}/external/ggml/src/ggml-metal"),
+}
+for folder, source in kernel_sources.items():
+    require(source.is_dir(), f"pinned Metal sources needed for the kernel check are missing: {source}")
+    libraries = sorted(str(path) for path in (app / folder).glob("*.metallib"))
+    require(libraries, f"no Metal libraries in {folder}")
+    checked = subprocess.run([sys.executable, str(project / "scripts/check-metallib-kernels.py"), str(source), *libraries],
+                             capture_output=True, text=True)
+    require(checked.returncode == 0, f"Metal kernels missing in {folder}: {checked.stderr.strip()}")
 for name, path in helper_paths.items():
     helper = app / path
     check_build_paths(helper.read_bytes(), name)

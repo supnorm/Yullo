@@ -221,7 +221,7 @@ enum SettingsSearch {
         .init(
             titleKey: "Recognition model", page: .dictation, anchor: "recognition",
             relatedKeys: [
-                "Browse models…", "Spoken language", "Cohere", "Apple Speech · on device",
+                "Browse models…", "Spoken language", "Cohere", "Apple Speech · on this Mac",
                 "Use Apple Speech if local recognition fails", "Use Apple Speech if Whisper fails",
                 "Apple Speech language", "Download Apple Speech language", "Show words while listening", "Live preview"
             ]),
@@ -356,13 +356,13 @@ enum SettingsSearch {
         .init(
             titleKey: "Translate with", page: .translation, anchor: "translation-model",
             relatedKeys: [
-                "Translation service", "Translation model", "Apple · on device", "Local model", "Ollama",
+                "Translation service", "Translation model", "Apple · on this Mac", "Local model", "Ollama",
                 "Translation API", "API connection", "Your API", "Command-line tools", "Translator"
             ]),
         .init(
             titleKey: "Manage languages…", page: .translation, anchor: "apple",
             relatedKeys: [
-                "Download languages", "Apple translation languages", "Apple · on device", "Offline & fallback"
+                "Download languages", "Apple translation languages", "Apple · on this Mac", "Offline & fallback"
             ]),
         .init(
             titleKey: "API connection", page: .models, anchor: "api",

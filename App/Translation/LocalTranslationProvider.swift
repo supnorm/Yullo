@@ -12,7 +12,7 @@ enum LocalTranslationIssue: Error, LocalizedError, Equatable {
         case .inputTooLong: key = "This text is too long for the local model. Try a shorter passage."
         case .sourceRequired: key = "Choose one source language for this local model."
         case .unsupportedLanguage: key = "This local model doesn’t support that language."
-        case .failed: key = "Local translation failed. Try another model."
+        case .failed: key = "The local model couldn’t run on this Mac."
         case .invalidOutput: key = "The local model didn’t return a complete translation."
         }
         return L10n.tr(key)
@@ -34,6 +34,29 @@ actor LocalTranslationProvider {
     private var helper: CLIServeHelper?
     private var helperUse = UUID()
     private var memoryPressure: DispatchSourceMemoryPressure?
+    // How the helper uses the GPU. A helper that crashes or fails at run time
+    // moves one step safer, for the rest of this app session: the GPU-specific
+    // tensor-API kernels off, then flash attention off too, then the CPU alone.
+    enum HelperMode: CaseIterable, Sendable {
+        case standard, noTensor, safeGPU, cpu
+        var arguments: [String] {
+            switch self {
+            case .standard: return []
+            case .noTensor: return ["--no-tensor"]
+            case .safeGPU: return ["--safe-gpu"]
+            case .cpu: return ["--cpu"]
+            }
+        }
+        var safer: HelperMode? {
+            switch self {
+            case .standard: return .noTensor
+            case .noTensor: return .safeGPU
+            case .safeGPU: return .cpu
+            case .cpu: return nil
+            }
+        }
+    }
+    private(set) var helperMode = HelperMode.standard
     // Publisher-listed Hy-MT2 coverage. Filipino uses the app's canonical fil
     // identifier; the publisher lists it as tl. Keep scripts and Cantonese
     // distinct, and do not infer support from the full app language catalog.
@@ -60,7 +83,7 @@ actor LocalTranslationProvider {
             (try? await library.runtime(id: modelID)) == .llama,
             let model = try? await library.acquireModel(id: modelID)
         else { return }
-        if operation == nil, let identity = CLIServeHelper.fileIdentity(model),
+        if operation == nil, let identity = CLIServeHelper.fileIdentity(model).map({ helperIdentity($0) }),
             (try? await warmHelper(identity: identity, model: model)) != nil
         {
             scheduleRetirement()
@@ -78,6 +101,9 @@ actor LocalTranslationProvider {
         await current?.stopAndWait()
     }
 
+    // A helper serves one model file in one mode.
+    private func helperIdentity(_ file: String) -> String { file + "\n" + helperMode.arguments.joined() }
+
     private func warmHelper(identity: String, model: URL) async throws -> CLIServeHelper {
         // At most one helper process exists: a different or stopped one has
         // fully exited before a replacement launches.
@@ -88,7 +114,7 @@ actor LocalTranslationProvider {
             directory: FileManager.default.temporaryDirectory.appendingPathComponent(
                 "yullo-local-translation-\(UUID().uuidString)", isDirectory: true))
         try launched.launch(
-            executable: helperURL, arguments: ["--model", model.path, "--serve"],
+            executable: helperURL, arguments: ["--model", model.path, "--serve"] + helperMode.arguments,
             environment: [
                 "PATH": "/usr/bin:/bin", "TMPDIR": launched.directory.path + "/", "LANG": "en_US.UTF-8",
                 "LC_ALL": "en_US.UTF-8"
@@ -210,17 +236,29 @@ actor LocalTranslationProvider {
             try Task.checkCancellation()
             let remaining = timeout - (ProcessInfo.processInfo.systemUptime - started)
             guard remaining > 0 else { throw LocalTranslationIssue.failed }
-            guard let identity = CLIServeHelper.fileIdentity(modelURL) else { throw LocalTranslationIssue.unavailable }
+            guard let file = CLIServeHelper.fileIdentity(modelURL) else { throw LocalTranslationIssue.unavailable }
             helperUse = UUID()
             let line: Data
             do {
-                line = try await warmHelper(identity: identity, model: modelURL).request(data, timeout: remaining)
+                line = try await warmHelper(identity: helperIdentity(file), model: modelURL)
+                    .request(data, timeout: remaining)
             } catch {
                 await retireHelper()
                 try Task.checkCancellation()
+                // Stopped before its deadline: it crashed or couldn't start. Run the
+                // same request once more in the next safer mode.
+                if ProcessInfo.processInfo.systemUptime - started < timeout, let safer = helperMode.safer {
+                    helperMode = safer
+                    return try await invoke(data)
+                }
                 throw LocalTranslationIssue.failed
             }
             try Task.checkCancellation()
+            if Self.isRuntimeFailure(line), let safer = helperMode.safer {
+                await retireHelper()
+                helperMode = safer
+                return try await invoke(data)
+            }
             do {
                 let text = try Self.parse(line, status: 0)
                 scheduleRetirement()
@@ -327,6 +365,12 @@ actor LocalTranslationProvider {
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
         guard data.count <= 196_608 else { throw LocalTranslationIssue.inputTooLong }
         return data
+    }
+
+    // The helper's own report that its runtime failed (a model or GPU context it
+    // could not create), as opposed to a request it refused.
+    static func isRuntimeFailure(_ data: Data) -> Bool {
+        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String == "failed"
     }
 
     static func parse(_ data: Data, status: Int32) throws -> String {

@@ -1,5 +1,6 @@
-import Foundation
+import AppKit
 import Combine
+import Foundation
 
 @MainActor struct SelectionVoiceEditBackend {
     var edit: (String, String, TranslationSettings) async throws -> String
@@ -50,16 +51,17 @@ import Combine
     // Replace writes somewhere of its own (the guide's Sample card), not into a selection:
     // notes about the selection or the app in front don't apply.
     private(set) var ownTarget = false
-    // The app the selection came from, named when its text can't be written.
-    private var sourceApp: String?
+    // Why the selection can't be written, when it came without a write lease.
+    private var limit: SelectionReader.WriteLimit?
     private var operation: Task<Void, Never>?
     private var delivery = RecentVoiceResultStore.DeliveryOutcome.notInserted
     private var replacementAttempt: UUID?
     // Why the selection can no longer be replaced after an attempt, said again with later results.
     private var spent: String?
     // Each further request refines the current result against the same
-    // original; Undo steps back through these, newest last.
-    private var earlier: [(instruction: String, result: String)] = []
+    // original; Undo steps back through these, newest last. `typed`: the
+    // step out of that result was a correction made by hand.
+    private var earlier: [(instruction: String, result: String, typed: Bool)] = []
 
     init(backend: SelectionVoiceEditBackend? = nil) { self.backend = backend ?? .system }
     var canReplace: Bool {
@@ -78,7 +80,7 @@ import Combine
     var deliveryOutcome: RecentVoiceResultStore.DeliveryOutcome { delivery }
     func prepare(
         source: String, token: UUID?, settings: TranslationSettings, sourceIsCurrent: @escaping () -> Bool,
-        ownTarget: Bool = false, sourceApp: String? = nil
+        ownTarget: Bool = false, limit: SelectionReader.WriteLimit? = nil
     ) throws -> UUID {
         guard
             source.utf8.prefix(CoreVoiceEditPrompt.maximumSourceBytes + 1).count
@@ -95,7 +97,7 @@ import Combine
         self.settings = settings
         self.sourceIsCurrent = sourceIsCurrent
         self.ownTarget = ownTarget
-        self.sourceApp = sourceApp
+        self.limit = limit
         phase = .instruction
         // Apple's model loads while the request is still being spoken.
         if settings.engine == "apple" { AppleWriterWarmSession.shared.prewarm(CoreVoiceEditPrompt.localInstruction) }
@@ -167,7 +169,7 @@ import Combine
                     self.changed()
                     return
                 }
-                if refining { self.earlier.append(previous) }
+                if refining { self.earlier.append((previous.instruction, previous.result, false)) }
                 self.instruction = text
                 self.result = output
                 self.message = [standIn, review.notice].compactMap { $0 }.joined(separator: "\n")
@@ -184,7 +186,9 @@ import Combine
                     ]
                     .filter { !$0.isEmpty }.joined(separator: "\n")
                 } else if self.token == nil {
-                    let issue = self.spent ?? Self.cannotReplace(in: self.sourceApp)
+                    let issue = self.spent ?? Self.cannotReplace(self.limit)
+                    // Accessibility turned off is fixed where it is said.
+                    if self.spent == nil, AccessibilityGrant.current() != .granted { self.recovery = .permissions }
                     self.message = [self.message, issue].filter { !$0.isEmpty }.joined(separator: "\n")
                 }
                 self.didAcceptResult?(expected, self.source, output, self.delivery)
@@ -274,11 +278,23 @@ import Combine
     var canTryAgain: Bool { phase == .review && !instruction.isEmpty && !result.isEmpty }
     func tryAgain() {
         guard canTryAgain else { return }
-        let base = earlier.last?.result ?? source
+        // From the text the last request was made on, past corrections made since.
+        let base = earlier.last { !$0.typed }?.result ?? source
         message = ""
         phase = .instruction
         changed()
         acceptInstruction(instruction, for: id, base: base)
+    }
+    // A correction made by hand: it is the result Copy, Replace and a further
+    // change use, and Undo steps back to the one before it.
+    func editResult(_ text: String) {
+        guard phase == .review, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !TextMutationRange.identical(text, result)
+        else { return }
+        earlier.append((instruction, result, true))
+        result = text
+        didAcceptResult?(id, source, result, delivery)
+        changed()
     }
     func undo() {
         guard canUndo, let last = earlier.popLast() else { return }
@@ -363,9 +379,12 @@ import Combine
                 } else if issue == .staleSelection {
                     // Copy is the way on; nothing goes on the clipboard until it is pressed.
                     self.message = L10n.tr("The selected text changed, so nothing was replaced.")
-                } else if outcome == .notInserted, issue != .permission, DeliveryFallback.copy(output) {
+                } else if outcome == .notInserted, ![.permission, .secureInput, .protectedField].contains(issue),
+                    DeliveryFallback.copy(output)
+                {
                     // Nothing was written and it can't be tried again: the result goes on the
-                    // clipboard, and the notice says so. Permission keeps its own way to fix it.
+                    // clipboard, and the notice says so. Permission, secure input and password
+                    // fields keep their own reason, with Copy under it.
                     self.message = L10n.tr("Couldn’t replace the text. Result copied.")
                 } else {
                     self.message = Self.replacementMessage(issue)
@@ -405,7 +424,8 @@ import Combine
             recovery = .retry
         } else if phase == .review {
             recovery = .none
-            if !ownTarget { message = Self.cannotReplace(in: sourceApp) }
+            // Settings let go of the selection; a new one can be replaced.
+            if !ownTarget { message = L10n.tr("To replace the text, select it again.") }
         }
         changed()
     }
@@ -503,13 +523,39 @@ import Combine
         case .emptyResult, nil: return .retry
         }
     }
-    // After an attempt that wrote nothing and can run again.
-    // No dead end: what to do instead, with the app named when it is known.
-    static func cannotReplace(in app: String?) -> String {
-        app.map {
-            L10n.format("%@ doesn’t let Yullo edit this text. Paste the result there with ⌘V.", $0)
+    // Why a result can't replace its selection, and what to do instead. Three
+    // causes, told apart: Accessibility isn't allowed (fixed in place), the text
+    // is read-only, or Yullo couldn't reach the field. Only read-only text is
+    // the text's own doing; the app is never blamed for focus Yullo didn't find.
+    // Accessibility off, said for Replace: the reason alone beside Allow Accessibility…. The
+    // remove-and-add steps show only when the row is on but macOS hasn't applied it.
+    static func accessibilityReason() -> String? {
+        switch AccessibilityGrant.current() {
+        case .granted: nil
+        case .missing: L10n.tr("Replace needs Accessibility.")
+        case .notApplied: AccessibilityGrant.notApplied.message
         }
-            ?? L10n.tr("This app doesn’t let Yullo edit this text. Paste the result there with ⌘V.")
+    }
+    // Secure input swallows the keys a paste needs. The app holding it is named: Terminal and
+    // iTerm call it Secure Keyboard Entry. Yullo can't turn it off, so there is no fix button.
+    nonisolated static func secureInputReason(holder: String? = secureInputHolder()) -> String {
+        holder.map { L10n.format("Secure Keyboard Entry is on in %@, so Yullo can’t replace the text.", $0) }
+            ?? L10n.tr("Another app is keeping typing private, so Yullo can’t replace the text.")
+    }
+    nonisolated static func secureInputHolder() -> String? {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+            let pid = (session["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value, pid > 0,
+            pid != ProcessInfo.processInfo.processIdentifier
+        else { return nil }
+        return NSRunningApplication(processIdentifier: pid)?.localizedName
+    }
+    static func cannotReplace(_ limit: SelectionReader.WriteLimit?) -> String {
+        if let reason = accessibilityReason() { return reason }
+        switch limit {
+        case .readOnly: return L10n.tr("This text is read-only.")
+        case .unreachable, nil:
+            return L10n.tr("Yullo couldn’t reach this text field.")
+        }
     }
     private static func retryMessage(_ issue: SelectionReplacement.Issue?) -> String? {
         switch issue {
@@ -525,22 +571,24 @@ import Combine
         if outcome == .uncertain { return L10n.tr("Check the original app before inserting again.") }
         switch issue {
         case .permission:
-            return AccessibilityGrant.current().message
-                ?? L10n.tr("Allow Accessibility access, then select the text again.")
-        case .unsupported: return cannotReplace(in: nil)
+            return accessibilityReason() ?? L10n.tr("Allow Accessibility access, then select the text again.")
+        case .unsupported: return cannotReplace(.readOnly)
         case .staleSelection: return L10n.tr("The selected text changed, so it can’t be replaced.")
+        case .secureInput: return Self.secureInputReason()
+        case .protectedField: return L10n.tr("Yullo doesn’t edit password fields.")
         default: return L10n.tr("Couldn’t access the original selection. Select it again.")
         }
     }
     private static func replacementMessage(_ issue: SelectionReplacement.Issue?) -> String {
         switch issue {
         case .permission:
-            return AccessibilityGrant.current().message
-                ?? L10n.tr("Allow Accessibility access, then select the text again.")
-        case .unsupported: return cannotReplace(in: nil)
+            return accessibilityReason() ?? L10n.tr("Allow Accessibility access, then select the text again.")
+        case .unsupported: return cannotReplace(.readOnly)
         case .focusUnavailable: return L10n.tr("Couldn’t access the original selection. Select it again.")
         case .staleSelection: return L10n.tr("The selected text changed, so it can’t be replaced.")
-        case .failed, .notAnswering: return L10n.tr("Couldn’t replace the selection.")
+        case .secureInput: return Self.secureInputReason()
+        case .protectedField: return L10n.tr("Yullo doesn’t edit password fields.")
+        case .failed, .notAnswering, .unwrittenNeedsPaste: return L10n.tr("Couldn’t replace the selection.")
         case .uncertain, nil: return L10n.tr("Check the original app before inserting again.")
         }
     }

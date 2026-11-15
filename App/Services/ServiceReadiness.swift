@@ -88,7 +88,7 @@ enum ServiceChoices {
         return including(preferences.engine, in: ready + ollama, order: ["apple", "local", "ollama", "api", "cli"])
     }
     static func writing(_ preferences: Preferences) -> [String] {
-        // Apple · on device is always listed; when it can't run, Write with says why.
+        // Apple · on this Mac is always listed; when it can't run, Write with says why.
         let ready = ["apple"] + ["api", "cli"].filter { configured($0, preferences) }
         let ollama = preferences.ollamaModel.isEmpty ? [] : ["ollama"]
         return including(

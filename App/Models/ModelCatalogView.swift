@@ -113,6 +113,22 @@ struct LocalModelSelection: Equatable {
             needs: .init(task: task, languageIDs: languageIDs, livePreview: livePreview), profile: profile,
             candidates: ModelDiscoveryCatalog.hardwareCatalog, installedIDs: Set(installed.map(\.id)))
     }
+    // The plain one-line reason beside a recommended model: the languages it is picked for on
+    // this Mac and, for dictation, a secondary language it doesn't recognize.
+    static func recommendationLine(_ pick: ModelHardwareRecommendation, task: ModelTask, languageIDs: [String])
+        -> String
+    {
+        if pick.reason == .compact { return L10n.tr("Recommended: a smaller download for this Mac.") }
+        var seen = Set<String>()
+        let covered = languageIDs.compactMap { HardwareModelRecommendation.coverageID($0, task: task) }
+            .filter { seen.insert($0).inserted && !pick.missingLanguageIDs.contains($0) }
+        guard !covered.isEmpty else { return L10n.tr("Recommended for this Mac.") }
+        let names = languageList(Array(covered.prefix(3)), localized: true)
+        guard !pick.missingLanguageIDs.isEmpty else { return L10n.format("Recommended for %@ on this Mac.", names) }
+        return L10n.format(
+            "Recommended for %1$@. It doesn’t recognize %2$@.", names,
+            languageList(pick.missingLanguageIDs, localized: true))
+    }
     static func recommendationHelp(_ reason: ModelHardwareRecommendation.Reason?) -> String {
         switch reason {
         case .compact: return L10n.tr("A smaller download with lower estimated memory use.")
@@ -410,10 +426,11 @@ struct LocalTaskModelPicker: View {
         ModelCatalogPresentation.choiceLabel(id: selected, task: task, installed: installed)
     }
     var body: some View {
-        let recommendedID = hardware.flatMap {
+        let pick = hardware.flatMap {
             ModelCatalogPresentation.recommendation(
-                for: task, languageIDs: languageIDs, profile: $0, installed: models.installed)?.modelID
+                for: task, languageIDs: languageIDs, profile: $0, installed: models.installed)
         }
+        let recommendedID = pick?.modelID
         VStack(alignment: .leading, spacing: 6) {
             Picker(L10n.tr("Model"), selection: $selected) {
                 if !installed.contains(where: { $0.id == selected }) {
@@ -423,7 +440,11 @@ struct LocalTaskModelPicker: View {
                     Text(ModelCatalogPresentation.optionLabel($0.name, recommended: $0.id == recommendedID)).tag($0.id)
                 }
             }.help(choiceLabel)
-            ModelRatingSummary(modelID: selected, recommended: selected == recommendedID)
+            ModelRatingSummary(
+                modelID: selected, recommended: selected == recommendedID,
+                reason: pick.map {
+                    ModelCatalogPresentation.recommendationLine($0, task: task, languageIDs: languageIDs)
+                })
         }.task {
             if hardware == nil { hardware = await ModelHardwareProfile.load() }
             await models.refresh()
@@ -482,12 +503,21 @@ struct ModelRatingView: View {
 struct ModelRatingSummary: View {
     let modelID: String
     var recommended = false
+    // Why it is recommended, in one plain line under the rating; nil keeps the short tag.
+    var reason: String? = nil
     var body: some View {
         if let rating = ModelDiscoveryCatalog.rating(for: modelID) {
-            HStack(spacing: 10) {
-                ModelRatingView(rating: rating)
-                if recommended {
-                    Text(L10n.tr("Recommended")).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize()
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 10) {
+                    ModelRatingView(rating: rating)
+                    if recommended, reason == nil {
+                        Text(L10n.tr("Recommended")).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize()
+                    }
+                }
+                if recommended, let reason {
+                    Text(reason).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier(
+                            "model-recommendation-reason")
                 }
             }
         }

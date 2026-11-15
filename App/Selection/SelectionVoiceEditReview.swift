@@ -53,6 +53,8 @@ import SwiftUI
         var copy: (String) -> Bool
         // Ends just the change in progress, keeping the earlier result.
         var stop: (() -> Void)? = nil
+        // The result as corrected by hand: Copy, Replace and a further change use it.
+        var edit: ((String) -> Void)? = nil
     }
     static let width: CGFloat = 440
     static let minimumWidth: CGFloat = 400
@@ -87,6 +89,7 @@ import SwiftUI
     private var keyMonitor: Any?
     private var changingObserver: AnyCancellable?
     private var showsChangesObserver: AnyCancellable?
+    private var draftObserver: AnyCancellable?
     private var outsideMonitor: Any?
     private var visibleObserver: NSObjectProtocol?
 
@@ -94,13 +97,14 @@ import SwiftUI
         content: Content, backend: VoiceComparisonBackend, isCurrent: @escaping () -> Bool,
         close: @escaping () -> Void, replace: @escaping () -> Void, recordAgain: (() -> Void)?,
         request: ((String) -> Void)? = nil, undo: (() -> Void)? = nil, tryAgain: (() -> Void)? = nil,
-        stop: (() -> Void)? = nil, fix: (title: String, run: () -> Void)?, theme: String = "system"
+        stop: (() -> Void)? = nil, fix: (title: String, run: () -> Void)?, edit: ((String) -> Void)? = nil,
+        theme: String = "system"
     ) {
         state = SelectionVoiceEditReviewState(
             content: content,
             actions: Self.actions(
                 backend: backend, isCurrent: isCurrent, close: close, replace: replace, recordAgain: recordAgain,
-                request: request, undo: undo, tryAgain: tryAgain, stop: stop, fix: fix))
+                request: request, undo: undo, tryAgain: tryAgain, stop: stop, fix: fix, edit: edit))
         host = ThemeHostingView(
             rootView: TopAlignedReview(review: SelectionVoiceEditReviewView(state: state)), theme: theme,
             inheritedAppearance: NSApp.effectiveAppearance)
@@ -124,6 +128,10 @@ import SwiftUI
             DispatchQueue.main.async { self?.fitWindow(animated: true, reflow: true) }
         }
         state.morphLanded = { [weak self] in self?.fitWindow(animated: true, reflow: true) }
+        // A correction typed into the result: the window grows or shrinks with it, at once.
+        draftObserver = state.$resultDraft.dropFirst().removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.fitWindow(animated: false) }
+        }
         state.textHeight = { [weak self] height, final in self?.follow(height, final: final) }
         state.shown = { [weak self] in self?.window?.isVisible == true }
         // The first result arrives from the selection as it was.
@@ -170,19 +178,26 @@ import SwiftUI
         content: Content, backend: VoiceComparisonBackend, isCurrent: @escaping () -> Bool,
         close: @escaping () -> Void, replace: @escaping () -> Void, recordAgain: (() -> Void)?,
         request: ((String) -> Void)? = nil, undo: (() -> Void)? = nil, tryAgain: (() -> Void)? = nil,
-        stop: (() -> Void)? = nil, fix: (title: String, run: () -> Void)?
+        stop: (() -> Void)? = nil, fix: (title: String, run: () -> Void)?, edit: ((String) -> Void)? = nil
     ) {
         state.actions = Self.actions(
             backend: backend, isCurrent: isCurrent, close: close, replace: replace, recordAgain: recordAgain,
-            request: request, undo: undo, tryAgain: tryAgain, stop: stop, fix: fix)
+            request: request, undo: undo, tryAgain: tryAgain, stop: stop, fix: fix, edit: edit)
         state.invalidated = false
         let previous = state.content
-        if content.edited != previous.edited { state.changing = false }
+        // The person's own correction coming back as the result: no arrival, the text as typed.
+        let typed = state.typedCommit.map { $0 == content.edited } ?? false
+        state.typedCommit = nil
+        if content.edited != previous.edited, !typed {
+            state.changing = false
+            state.resultDraft = nil
+            state.resultVersion += 1
+        }
         if previous.asking, !content.asking, !content.edited.isEmpty, window?.isVisible == true {
             state.awaitingSize = true
         }
         // A new result arrives from the text it changes: the earlier result, or the selection.
-        let morphs = content.edited != previous.edited && !content.edited.isEmpty
+        let morphs = content.edited != previous.edited && !content.edited.isEmpty && !typed
         withAnimation(
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || morphs ? nil : .easeOut(duration: 0.22)
         ) {
@@ -203,7 +218,8 @@ import SwiftUI
     private static func actions(
         backend: VoiceComparisonBackend, isCurrent: @escaping () -> Bool, close: @escaping () -> Void,
         replace: @escaping () -> Void, recordAgain: (() -> Void)?, request: ((String) -> Void)?,
-        undo: (() -> Void)?, tryAgain: (() -> Void)?, stop: (() -> Void)?, fix: (title: String, run: () -> Void)?
+        undo: (() -> Void)?, tryAgain: (() -> Void)?, stop: (() -> Void)?, fix: (title: String, run: () -> Void)?,
+        edit: ((String) -> Void)?
     ) -> Actions {
         .init(
             isCurrent: isCurrent, close: close, replace: replace, recordAgain: recordAgain, request: request,
@@ -211,7 +227,7 @@ import SwiftUI
             copy: { text in
                 guard isCurrent(), !text.isEmpty else { return false }
                 return backend.write(text, backend.pasteboard())
-            }, stop: stop)
+            }, stop: stop, edit: edit)
     }
 
     func setTheme(_ value: String) { host.setTheme(value) }
@@ -366,6 +382,23 @@ import SwiftUI
         // every key but a ⌘ shortcut is its own: ↩ commits and Esc cancels the
         // composition, never the review.
         if !flags.contains(.command), Self.composing(window?.firstResponder) { return false }
+        // The result being corrected takes its own typing, editing keys and ⌘Z.
+        // ↩ still presses the filled action, with the text as corrected; ⇧↩ or ⌥↩
+        // starts a new line; Esc steps out of the text and keeps the correction.
+        if let editor = window?.firstResponder as? ResultTextView, editor.isEditable {
+            if event.keyCode == 53, flags.isEmpty {
+                window?.makeFirstResponder(nil)
+                state.commitDraft()
+                return true
+            }
+            if returnKey, flags.isEmpty {
+                state.primary()
+                return true
+            }
+            if returnKey, flags == .shift || flags == .option { return false }
+            if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "z" { return false }
+            if Self.typing(event, flags: flags) { return false }
+        }
         if event.keyCode == 53, flags.isEmpty {
             state.escape()
             return true
@@ -449,6 +482,13 @@ import SwiftUI
         didSet { if content != oldValue { refreshSegments() } }
     }
     @Published var draft = ""
+    // The result as being corrected by hand, until it is handed back as the result.
+    @Published var resultDraft: String?
+    // A correction just handed back: it returns as the result without an arrival.
+    var typedCommit: String?
+    // Counts results other than the person's own corrections: the text view is made anew
+    // for each, and kept, with its caret, through a correction.
+    @Published var resultVersion = 0
     @Published var changing = false
     // The change field has focus and takes typing itself.
     var fieldReady = false
@@ -572,6 +612,27 @@ import SwiftUI
         !content.unchanged && (content.canReplace || content.replacing || content.replaceable)
     }
     var canAccept: Bool { live && content.canReplace && !content.working }
+    // The text Copy and Replace use: the result, as corrected by hand.
+    var shownResult: String { resultDraft ?? content.edited }
+    // The result at rest takes corrections, once it is a result of its own.
+    var editsResult: Bool {
+        live && actions.edit != nil && !content.working && !content.replacing && !content.unchanged
+            && !content.asking && !content.edited.isEmpty
+    }
+    // A correction typed into the result.
+    func typeResult(_ text: String) {
+        resultDraft = text == content.edited ? nil : text
+    }
+    // Hands a correction back as the result, once: before anything acts on the result.
+    func commitDraft() {
+        guard let text = resultDraft else { return }
+        resultDraft = nil
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text != content.edited,
+            let edit = actions.edit, current
+        else { return }
+        typedCommit = text
+        edit(text)
+    }
     var canChange: Bool { idle && actions.request != nil }
     var canTryAgain: Bool { idle && actions.tryAgain != nil }
     // While a change has text, ↩ sends it; Replace steps back to a plain button.
@@ -665,6 +726,7 @@ import SwiftUI
         morphLanded?()
     }
     func toggleShowsChanges() {
+        commitDraft()
         guard changeSegments != nil || changesTooLarge else { return }
         skipMorph()
         withAnimation(
@@ -678,11 +740,13 @@ import SwiftUI
     }
     func accept() {
         skipMorph()
+        commitDraft()
         guard canAccept, current else { return }
         actions.replace()
     }
     func openChange(typing: String = "") {
         skipMorph()
+        commitDraft()
         guard canChange, current else { return }
         if !changing {
             draft = ""
@@ -762,17 +826,24 @@ import SwiftUI
         }
     }
     func recordAgain() {
+        commitDraft()
         guard idle, current else { return }
         changing = false
         actions.recordAgain?()
     }
     func undo() {
         skipMorph()
+        // A correction not yet handed back is simply dropped.
+        if resultDraft != nil {
+            resultDraft = nil
+            return
+        }
         guard idle, current, content.canUndo else { return }
         actions.undo?()
     }
     func tryAgain() {
         skipMorph()
+        resultDraft = nil
         guard canTryAgain, current else { return }
         changing = false
         actions.tryAgain?()
@@ -782,7 +853,8 @@ import SwiftUI
         actions.stop?()
     }
     func copy() {
-        guard !invalidated, !content.working, actions.copy(content.edited) else { return }
+        commitDraft()
+        guard !invalidated, !content.working, actions.copy(shownResult) else { return }
         // Confirmed on the button, as the Yullo window confirms its copy.
         copied = true
         copiedReset?.cancel()
@@ -946,7 +1018,8 @@ struct SelectionVoiceEditReviewView: View {
                     ? ($0.landed ? $0.to : $0.from)
                     : $0.plan.showing
                         ? Self.shownString($0.segments) : ($0.from.count > $0.to.count ? $0.from : $0.to)
-            } ?? shown.map(Self.shownString) ?? content.edited
+            } ?? shown.map(Self.shownString) ?? state.shownResult
+        let editable = morph == nil && shown == nil && state.editsResult
         let long = Self.height(of: measured, size: size, width: state.width - 56) > state.textLimit - 12
         let text = Group {
             if let morph {
@@ -954,6 +1027,12 @@ struct SelectionVoiceEditReviewView: View {
             } else if let shown {
                 // The difference is for reading: copied and replaced text is always the result.
                 styled(state.shownText ?? Self.shown(shown), size: size, quiet: false).textRenderer(marks(fill))
+            } else if editable {
+                // At rest, the result is text to correct in place: a click puts the caret in it.
+                ResultEditor(
+                    text: state.shownResult, size: size, lineSpacing: size >= 18 ? 5 : 4,
+                    changed: { [weak state] in state?.typeResult($0) },
+                    ended: { [weak state] in state?.commitDraft() })
             } else {
                 styled(Text(verbatim: content.edited), size: size, quiet: content.unchanged)
                     .textSelection(.enabled)
@@ -978,12 +1057,10 @@ struct SelectionVoiceEditReviewView: View {
             }
         }
         // A changes view worked out after the result showed fades in over it.
-        .id("\(content.edited)\(shown == nil ? "" : "\u{1}")").transition(reduceMotion ? .identity : .opacity)
+        .id("\(state.resultVersion)\(shown == nil ? "" : "\u{1}")").transition(reduceMotion ? .identity : .opacity)
         .opacity(content.working ? 0.7 : state.awaitingSize ? 0 : 1)
-        // VoiceOver reads the result itself, never the struck words.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L10n.tr("Edited"))
-        .accessibilityValue(content.edited)
+        // VoiceOver reads the result itself, never the struck words; the editor speaks for itself.
+        .modifier(ResultAccessibility(editable: editable, value: content.edited))
     }
 
     // A change arriving: the earlier text, its leaving words fading out; then the result,
@@ -2309,5 +2386,120 @@ struct ChangeMarkRenderer: TextRenderer {
             flush()
         }
         for line in layout { context.draw(line) }
+    }
+}
+
+// VoiceOver reads the shown result as one element; the editor is its own text field.
+private struct ResultAccessibility: ViewModifier {
+    let editable: Bool
+    let value: String
+    func body(content: Content) -> some View {
+        if editable {
+            content
+        } else {
+            content.accessibilityElement(children: .ignore).accessibilityLabel(L10n.tr("Edited"))
+                .accessibilityValue(value)
+        }
+    }
+}
+
+// The result as text to correct, set as the review sets it: its size, line spacing
+// and ink, no border or background. It takes focus only from a click, Tab or
+// VoiceOver, so typing elsewhere in the review still starts a change.
+final class ResultTextView: NSTextView {
+    // Set by a click in the text (or Tab, or VoiceOver), cleared when focus leaves.
+    var focusAllowed = false
+    override var acceptsFirstResponder: Bool {
+        guard isEditable else { return false }
+        if focusAllowed || NSWorkspace.shared.isVoiceOverEnabled { return true }
+        // The window asks before it hands the click on.
+        switch NSApp.currentEvent?.type {
+        case .leftMouseDown?, .rightMouseDown?: return true
+        case .keyDown?: return NSApp.currentEvent?.keyCode == 48
+        default: return false
+        }
+    }
+    override func mouseDown(with event: NSEvent) {
+        focusAllowed = true
+        super.mouseDown(with: event)
+    }
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { focusAllowed = false }
+        return resigned
+    }
+}
+
+struct ResultEditor: NSViewRepresentable {
+    let text: String
+    let size: CGFloat
+    let lineSpacing: CGFloat
+    let changed: (String) -> Void
+    let ended: () -> Void
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var editor: ResultEditor
+        init(_ editor: ResultEditor) { self.editor = editor }
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            editor.changed(view.string)
+        }
+        func textDidEndEditing(_ notification: Notification) { editor.ended() }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private var attributes: [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineSpacing
+        return [
+            .font: NSFont.systemFont(ofSize: size), .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor
+        ]
+    }
+    func makeNSView(context: Context) -> ResultTextView {
+        let view = ResultTextView(usingTextLayoutManager: false)
+        view.drawsBackground = false
+        view.isRichText = false
+        view.importsGraphics = false
+        view.allowsUndo = true
+        view.isEditable = true
+        view.isSelectable = true
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        view.setAccessibilityLabel(L10n.tr("Edited"))
+        view.delegate = context.coordinator
+        apply(to: view)
+        return view
+    }
+    func updateNSView(_ view: ResultTextView, context: Context) {
+        context.coordinator.editor = self
+        apply(to: view)
+    }
+    private func apply(to view: ResultTextView) {
+        let attributes = attributes
+        view.typingAttributes = attributes
+        guard let storage = view.textStorage else { return }
+        if view.string != text {
+            storage.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+        } else if storage.length > 0,
+            (storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize != size
+        {
+            storage.setAttributes(attributes, range: NSRange(location: 0, length: storage.length))
+        }
+    }
+    // As tall as its lines at the width offered, measured on its own layout.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: ResultTextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0, let layout = view.layoutManager,
+            let container = view.textContainer
+        else { return nil }
+        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        let height = layout.usedRect(for: container).height
+        return CGSize(width: width, height: max(ceil(size * 1.3), ceil(height)))
     }
 }

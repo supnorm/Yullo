@@ -62,6 +62,7 @@ with tempfile.TemporaryDirectory(prefix=".speech-sources-", dir=args.output.pare
     shutil.copyfile(espeak, root / espeak.name)
     shutil.copyfile(Path(__file__).with_name("runtime-source-paths.sh"), root / "runtime-source-paths.sh")
     shutil.copyfile(Path(__file__).with_name("metal-library.sh"), root / "metal-library.sh")
+    shutil.copyfile(Path(__file__).with_name("check-metallib-kernels.py"), root / "check-metallib-kernels.py")
     script = root / "build-offline.sh"
     script.write_text('''#!/bin/bash
 set -euo pipefail

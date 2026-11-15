@@ -20,7 +20,9 @@ struct PermissionSettingsView: View {
                     perform: permissions.microphoneAction)
                 permissionRow(
                     title: "Accessibility",
-                    purpose: AccessibilityRowText.purpose(permissions.status, asked: permissions.askedAccessibility),
+                    purpose: AccessibilityRowText.purpose(
+                        permissions.status, asked: permissions.askedAccessibility,
+                        returned: permissions.returnedAfterAsking),
                     status: accessibilityStatus, allowed: permissions.status?.accessibility,
                     action: AccessibilityRowText.action(permissions.status),
                     perform: permissions.accessibilityAction)
@@ -95,10 +97,12 @@ struct PermissionSettingsView: View {
 // once Enable… was pressed and it still isn't working, AccessibilityGrant's reason
 // with its fix; and the one action.
 enum AccessibilityRowText {
-    static func purpose(_ status: VoicePermissionStatus?, asked: Bool) -> String {
+    static func purpose(_ status: VoicePermissionStatus?, asked: Bool, returned: Bool = true) -> String {
         guard let status else { return L10n.tr(purposeKey) }
         switch status.accessibilityState {
         case .notApplied: return status.accessibilityState.message ?? L10n.tr(purposeKey)
+        // Just after Enable…: the list has opened; the remove-and-add step waits for a return.
+        case .missing where asked && !returned: return L10n.tr("Turn on Yullo in the list that opened.")
         case .missing where asked: return status.accessibilityState.message ?? L10n.tr(purposeKey)
         default: return L10n.tr(purposeKey)
         }

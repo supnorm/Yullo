@@ -652,11 +652,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         model.dismissTranslationComparison = { [weak self] in self?.translationComparison.dismiss() }
         model.openTranslationRecovery = { [weak self] action in
             guard let self else { return }
+            if let location = Self.serviceLocation(action, engine: self.model.preferences.engine) {
+                self.presentSettings(page: location.page, anchor: location.anchor, modelTask: location.task)
+                return
+            }
             switch action {
-            case .writingService, .anotherService(writing: true):
-                self.presentSettings(page: .translation, anchor: "writing-service")
-            case .anotherService(writing: false):
-                self.presentSettings(page: .translation, anchor: "translation-model")
+            case .writingService, .anotherService, .service:
+                return
             case .keychain, .speechKeyAccess, .speechKey:
                 guard let anchor = Self.savedKeyAnchor(action) else { return }
                 self.presentSettings(page: .models, anchor: anchor.rawValue)
@@ -687,9 +689,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 {
                     NSWorkspace.shared.open(url)
                 }
-            case .service:
-                let location = Self.engineLocation(self.model.preferences.engine, writing: false)
-                self.presentSettings(page: location.page, anchor: location.anchor, modelTask: location.task)
             }
         }
         voiceInput.openSettings = { [weak self] in self?.showVoiceSettings() }
@@ -2099,7 +2098,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     source: selection.text, token: selection.replacementToken,
                     settings: TranslationSettings(preferences, engine: preferences.voiceRefinementEngine),
                     sourceIsCurrent: { true },
-                    sourceApp: NSRunningApplication(processIdentifier: front)?.localizedName)
+                    limit: selection.limit)
                 self.captureVoiceEditHistory(session: id)
                 self.voiceEditAnchor = nil
                 self.voiceEditSource = (
@@ -2655,6 +2654,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let request: (String) -> Void =
             asking
             ? { [weak self] in self?.selectionVoiceEdit.ask($0) } : { [weak edit] in edit?.request($0) }
+        // The result corrected by hand, once there is one to correct.
+        let correct: ((String) -> Void)? = asking ? nil : { [weak edit] in edit?.editResult($0) }
         let reader: SelectionVoiceEditReview
         if placed, let existing = voiceEditReader, window.contentView === existing {
             // The same review: a further change lands in place.
@@ -2664,7 +2665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 replace: replace, recordAgain: recordAgain,
                 request: request, undo: { [weak edit] in edit?.undo() },
                 tryAgain: edit.instruction.isEmpty || asking ? nil : { [weak edit] in edit?.tryAgain() },
-                stop: { [weak edit] in _ = edit?.cancelRequest() }, fix: fix)
+                stop: { [weak edit] in _ = edit?.cancelRequest() }, fix: fix, edit: correct)
         } else {
             voiceEditReader?.invalidate()
             reader = SelectionVoiceEditReview(
@@ -2672,7 +2673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 replace: replace, recordAgain: recordAgain,
                 request: request, undo: { [weak edit] in edit?.undo() },
                 tryAgain: edit.instruction.isEmpty || asking ? nil : { [weak edit] in edit?.tryAgain() },
-                stop: { [weak edit] in _ = edit?.cancelRequest() }, fix: fix,
+                stop: { [weak edit] in _ = edit?.cancelRequest() }, fix: fix, edit: correct,
                 theme: model.preferences.appearance)
             voiceEditReader = reader
             window.contentView = reader
@@ -2846,7 +2847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             )
         case .permissions:
             // Accessibility is allowed in System Settings, opened at its pane; the review stays.
-            return (L10n.tr("Allow access…"), { Model.openAccessibilitySettings() })
+            return (L10n.tr("Allow Accessibility…"), { Model.openAccessibilitySettings() })
         case .credentials, .processing, .service, .vocabulary:
             let label =
                 recovery == .credentials
@@ -2933,6 +2934,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     // Where an engine's own setup is, for the task that failed: its editor in
     // Services (opened), the model library, Apple's languages, or the row that chooses one.
+    // Where Settings opens for a fix that chooses or sets up a service: another service
+    // opens its Translate with or Write with menu; the current one opens its own setup.
+    static func serviceLocation(_ action: TranslationRecoveryAction, engine: String) -> (
+        page: SettingsPage, anchor: String, task: ModelTask?
+    )? {
+        switch action {
+        case .writingService, .anotherService(writing: true): return (.translation, "writing-service", nil)
+        case .anotherService(writing: false): return (.translation, "translation-model", nil)
+        case .service: return engineLocation(engine, writing: false)
+        default: return nil
+        }
+    }
     static func engineLocation(_ engine: String, writing: Bool) -> (
         page: SettingsPage, anchor: String, task: ModelTask?
     ) {

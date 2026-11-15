@@ -17,6 +17,13 @@ enum SelectionReplacement {
     // late. Replacement asks again before any write; it never leaves `replace`.
     enum Issue: Error, Equatable {
         case staleSelection, unsupported, permission, failed, uncertain, focusUnavailable, notAnswering
+        // Secure input (a password prompt somewhere) swallows posted keys: nothing can be pasted.
+        case secureInput
+        // A password field: never read or written.
+        case protectedField
+        // Inside the AX backend only: every write that works in the background read back as
+        // nothing written, so a paste in front is the next step (never leaves `replace`).
+        case unwrittenNeedsPaste
         // Failures that may pass on another try of the same selection. Before the write they leave
         // the lease in place; once the write has begun, the lease is consumed and no try can follow.
         // A changed selection is not one: selecting it again means leaving the review.
@@ -52,7 +59,8 @@ enum SelectionReplacement {
                     in: processID, backend: backend, cancellation: cancellation)
                 focused = element
                 stage = "protection"
-                guard !cancellation.isCancelled, try !backend.isProtected(element) else { return nil }
+                guard !cancellation.isCancelled else { return nil }
+                guard try !backend.isProtected(element) else { return .passwordField }
                 stage = "selected-text"
                 let selection = try SelectionCaptureText.read(
                     selectedText: { try backend.selectedText(element) },
@@ -96,7 +104,7 @@ enum SelectionReplacement {
                     let range = try? backend.selectedRange(element)
                     let bounds = backend.bounds(element, range: range)
                     guard !cancellation.isCancelled else { return nil }
-                    return .selection(SelectionReader.Result(text: readable(range), bounds: bounds))
+                    return .selection(SelectionReader.Result(text: readable(range), bounds: bounds, limit: .readOnly))
                 }
                 guard selection.replaceable || editableDocument else {
                     let bounds = backend.selectedMarkerBounds(element)
@@ -110,7 +118,8 @@ enum SelectionReplacement {
                         } : nil
                     return .selection(
                         SelectionReader.Result(
-                            text: text, bounds: bounds, replacementToken: token, pastes: token != nil))
+                            text: text, bounds: bounds, replacementToken: token, pastes: token != nil,
+                            limit: token == nil ? .readOnly : nil))
                 }
                 let range =
                     editableDocument
@@ -126,7 +135,8 @@ enum SelectionReplacement {
                 return .selection(
                     SelectionReader.Result(
                         text: text, bounds: bounds, replacementToken: token,
-                        endBounds: range.flatMap { backend.endBounds(element, range: $0) }))
+                        endBounds: range.flatMap { backend.endBounds(element, range: $0) },
+                        limit: token == nil ? .unreachable : nil))
             } catch {
                 guard !cancellation.isCancelled, !(error is CancellationError) else { return nil }
                 let issue = (error as? Issue).map { "\($0)" } ?? "failed"
@@ -153,7 +163,19 @@ enum SelectionReplacement {
         let result = borrowCopy(from: target, cancellation: cancellation)
         guard !cancellation.isCancelled else { return nil }
         switch result {
-        case .text(let text): return .selection(SelectionReader.Result(text: text, bounds: nil))
+        // Text only the app's own Copy could give: a paste lease, checked by Copy again at
+        // Replace. A terminal's paste types at its prompt, so its output stays read-only.
+        case .text(let text):
+            if SelectionCopyCapture.copiedLineWithoutSelection(
+                text, bundleURL: NSRunningApplication(processIdentifier: target)?.bundleURL)
+            {
+                selectionReplacementLogger.notice("Capture found stage=copy-line-without-selection")
+                return nil
+            }
+            guard !TerminalDelivery.isTerminal(processID: target),
+                let token = session.rememberCopied(processID: target, text: text)
+            else { return .selection(SelectionReader.Result(text: text, bounds: nil, limit: .unreachable)) }
+            return .selection(SelectionReader.Result(text: text, bounds: nil, replacementToken: token, pastes: true))
         case .nothingCopied:
             selectionReplacementLogger.notice("Capture found stage=copy-empty")
             return emptyMeansNothingSelected ? .empty : nil
@@ -324,6 +346,10 @@ protocol SelectionReplacementBackend {
     // A selection published only as page markers: its text, and a paste over it.
     func markerSelection(of element: Element) throws -> String
     func pasteOverMarker(_ text: String, to element: Element, processID: Int32, selected: String) throws
+    // Paste over a field whose background writes read back as nothing written.
+    func pasteSelection(_ text: String, to element: Element, expected: SelectionReplacementState) throws
+    // Paste over a selection the app gave only through its own Copy.
+    func pasteOverCopied(_ text: String, processID: Int32, selected: String) throws
 }
 
 extension SelectionReplacementBackend {
@@ -331,6 +357,86 @@ extension SelectionReplacementBackend {
     func markerSelection(of element: Element) throws -> String { throw SelectionReplacement.Issue.unsupported }
     func pasteOverMarker(_ text: String, to element: Element, processID: Int32, selected: String) throws {
         throw SelectionReplacement.Issue.unsupported
+    }
+    func pasteSelection(_ text: String, to element: Element, expected: SelectionReplacementState) throws {
+        throw SelectionReplacement.Issue.unsupported
+    }
+    func pasteOverCopied(_ text: String, processID: Int32, selected: String) throws {
+        throw SelectionReplacement.Issue.unsupported
+    }
+}
+
+// Writes into a field, each only while the field still reads exactly as it did before
+// (proven nothing written), so text is never inserted twice. An accepted write that
+// doesn't read back is checked again after a pause: only a field still untouched then
+// lets the next step run. Every step unwritten: the caller pastes, in front.
+enum SelectionWriteLadder {
+    enum Attempt { case accepted, unsupported }
+    static func run(
+        steps: [() throws -> Attempt], confirm: () throws -> Void, untouched: () -> Bool,
+        settle: TimeInterval = 0.3, pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }  // AX worker.
+    ) throws {
+        for step in steps {
+            guard try step() == .accepted else {
+                guard untouched() else { throw SelectionReplacement.Issue.uncertain }
+                continue
+            }
+            do {
+                try confirm()
+                return
+            } catch SelectionReplacement.Issue.uncertain {
+                guard untouched() else { throw SelectionReplacement.Issue.uncertain }
+                pause(settle)
+                guard untouched() else { throw SelectionReplacement.Issue.uncertain }
+            }
+        }
+        throw SelectionReplacement.Issue.unwrittenNeedsPaste
+    }
+}
+
+// A selection known only from the app's own Copy (no usable Accessibility: Java and
+// JetBrains with it off, Qt, Flutter). Copy again proves it is still selected; paste
+// writes; a last Copy proves it took: the same selection still there means the paste
+// changed nothing (read-only). The owner's clipboard is put back once, exactly, unless
+// something newer replaced it. What landed can't be read back, so it's said as Pasted.
+protocol CopiedPasteClipboard: TextDeliveryClipboard {
+    var copiedText: String? { get }
+}
+extension SystemDeliveryClipboard: CopiedPasteClipboard {}
+enum CopiedSelectionPaste {
+    enum Outcome: Equatable { case pasted, unchanged, stale, unavailable }
+    static func run<Clipboard: CopiedPasteClipboard>(
+        clipboard: Clipboard, selected: String, text: String, copy: () -> Bool, paste: () -> Bool,
+        timeout: TimeInterval = 0.6, settle: TimeInterval = 0.15,
+        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }  // AX worker only.
+    ) -> Outcome {
+        let original = clipboard.changeCount
+        guard let snapshot = try? clipboard.snapshot(), clipboard.changeCount == original else { return .unavailable }
+        var last = original
+        // Put back only what this changed, and only if nothing newer replaced it.
+        defer { if last != original, clipboard.changeCount == last { try? clipboard.restore(snapshot) } }
+        // The app's Copy, read once it has written: nil when nothing was copied in time.
+        func copied() -> String?? {
+            let before = clipboard.changeCount
+            guard copy() else { return .none }
+            let deadline = now() + timeout
+            while clipboard.changeCount == before, now() < deadline { pause(min(0.02, max(0, deadline - now()))) }
+            guard clipboard.changeCount != before else { return .some(nil) }
+            pause(settle)
+            last = clipboard.changeCount
+            return .some(clipboard.copiedText)
+        }
+        guard let first = copied() else { return .unavailable }
+        guard let first, TextMutationRange.identical(first, selected) else { return .stale }
+        guard (try? clipboard.setText(text)) != nil else { return .unavailable }
+        last = clipboard.changeCount
+        guard paste() else { return .unavailable }
+        // The paste is handled before the next key; a little time for apps that read the clipboard late.
+        pause(settle)
+        guard let after = copied() else { return .pasted }
+        if let after, TextMutationRange.identical(after, selected) { return .unchanged }
+        return .pasted
     }
 }
 
@@ -631,6 +737,28 @@ enum SelectionCopyCapture {
         default: nil
         }
     }
+    // JetBrains IDEs, Android Studio, Sublime Text and Qt editors copy the whole line when
+    // nothing is selected. A copy that is exactly one line with its break, from one of them,
+    // is not a selection: pasting over it would add a duplicate line.
+    static func copiesLineWithoutSelection(bundleURL: URL?) -> Bool {
+        guard let bundleURL else { return false }
+        let identifier = Bundle(url: bundleURL)?.bundleIdentifier ?? ""
+        if ["com.jetbrains.", "com.google.android.studio", "com.sublimetext."].contains(where: identifier.hasPrefix) {
+            return true
+        }
+        let frameworks = bundleURL.appendingPathComponent("Contents/Frameworks", isDirectory: true)
+        return ["QtCore.framework", "QtWidgets.framework"].contains {
+            FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).path)
+        }
+    }
+    static func isWholeLine(_ text: String) -> Bool {
+        let body = text.hasSuffix("\r\n") ? text.dropLast(2) : text.hasSuffix("\n") ? text.dropLast() : nil
+        guard let body, !body.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        return !body.contains(where: \.isNewline)
+    }
+    static func copiedLineWithoutSelection(_ text: String, bundleURL: URL?) -> Bool {
+        isWholeLine(text) && copiesLineWithoutSelection(bundleURL: bundleURL)
+    }
     // A focused list, table or grid holds items, not text: Command-C there copies
     // files (Finder) or cells (Numbers), so it is never sent.
     static func copies(fromRole role: String?) -> Bool {
@@ -724,6 +852,12 @@ final class SelectionReplacementCancellation: @unchecked Sendable {
     func check() throws {
         if isCancelled { throw CancellationError() }
     }
+    // A write proven to have changed nothing may be started again.
+    func reopen() {
+        lock.lock()
+        if state == .committed { state = .pending }
+        lock.unlock()
+    }
     func performMutation(_ body: () throws -> Void) throws {
         // Cancellation and the start of the single write have one ordering. An
         // AX write already in flight cannot be undone, so its outcome is returned.
@@ -771,12 +905,16 @@ enum SelectionCaptureWorker {
 final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
     private struct Target {
         let token: UUID
-        let element: Backend.Element
+        // None for a selection known only from the app's own Copy.
+        let element: Backend.Element?
         let processID: Int32
         let text: String
         let range: NSRange
         let created: TimeInterval
         var marker = false
+        var copied = false
+        // Background writes read back as nothing written: only a paste in front is left.
+        var pasteOnly = false
     }
     private let backend: Backend
     private let now: () -> TimeInterval
@@ -803,7 +941,8 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         else { return }
         target = Target(
             token: token, element: current.element, processID: current.processID, text: current.text,
-            range: current.range, created: now(), marker: current.marker)
+            range: current.range, created: now(), marker: current.marker, copied: current.copied,
+            pasteOnly: current.pasteOnly)
     }
 
     func recoverableProcessID(for token: UUID) -> Int32? {
@@ -833,6 +972,18 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         target = Target(
             token: token, element: element, processID: processID, text: text,
             range: NSRange(location: NSNotFound, length: 0), created: now(), marker: true)
+        return token
+    }
+
+    // A selection the app gave only through its own Copy: pasted over, after Copy shows
+    // it is still selected (CopiedSelectionPaste). Never a terminal: a paste there types.
+    func rememberCopied(processID: Int32, text: String) -> UUID? {
+        target = nil
+        guard processID > 0, !text.isEmpty, text.utf8.count <= Self.maximumBytes else { return nil }
+        let token = UUID()
+        target = Target(
+            token: token, element: nil, processID: processID, text: text,
+            range: NSRange(location: NSNotFound, length: 0), created: now(), copied: true)
         return token
     }
 
@@ -911,6 +1062,50 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
                 throw SelectionReplacement.Issue.staleSelection
             }
         }
+        // In front, or asked to come forward first (a paste goes to the app in front).
+        func requireFront(_ stage: String) throws {
+            failureStage = stage
+            let front = try backend.frontmostProcessID()
+            try cancellation.check()
+            guard front != captured.processID else { return }
+            if front == nil || front == ProcessInfo.processInfo.processIdentifier {
+                failureStage = "focus-unavailable"
+                throw SelectionReplacement.Issue.focusUnavailable
+            }
+            throw SelectionReplacement.Issue.staleSelection
+        }
+        if captured.copied {
+            try requireFront("copied-foreground")
+            failureStage = "write"
+            writing = true
+            try cancellation.performMutation {
+                target = nil
+                try backend.pasteOverCopied(text, processID: captured.processID, selected: captured.text)
+            }
+            completed = true
+            return captured.processID
+        }
+        guard let element = captured.element else { throw SelectionReplacement.Issue.staleSelection }
+        if captured.pasteOnly {
+            try requireFront("paste-foreground")
+            failureStage = "paste-focus"
+            guard backend.matches(try readFocusedElement(), element) else {
+                throw SelectionReplacement.Issue.staleSelection
+            }
+            failureStage = "paste-state"
+            let state = try backend.state(of: element)
+            guard state.processID == captured.processID, state.range == captured.range,
+                TextMutationRange.identical(state.selectedText, captured.text)
+            else { throw SelectionReplacement.Issue.staleSelection }
+            failureStage = "write"
+            writing = true
+            try cancellation.performMutation {
+                target = nil
+                try backend.pasteSelection(text, to: element, expected: state)
+            }
+            completed = true
+            return captured.processID
+        }
         if captured.marker {
             // Pasted only while the same app is in front, the same element has focus
             // and its selection still reads exactly as captured.
@@ -925,12 +1120,12 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
                 throw SelectionReplacement.Issue.staleSelection
             }
             failureStage = "marker-focus"
-            guard backend.matches(try readFocusedElement(), captured.element) else {
+            guard backend.matches(try readFocusedElement(), element) else {
                 throw SelectionReplacement.Issue.staleSelection
             }
             try cancellation.check()
             failureStage = "marker-selection"
-            guard TextMutationRange.identical(try backend.markerSelection(of: captured.element), captured.text) else {
+            guard TextMutationRange.identical(try backend.markerSelection(of: element), captured.text) else {
                 throw SelectionReplacement.Issue.staleSelection
             }
             failureStage = "final-expiry"
@@ -943,7 +1138,7 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
             try cancellation.performMutation {
                 target = nil
                 try backend.pasteOverMarker(
-                    text, to: captured.element, processID: captured.processID, selected: captured.text)
+                    text, to: element, processID: captured.processID, selected: captured.text)
             }
             completed = true
             return captured.processID
@@ -952,9 +1147,9 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         let focused = try readFocusedElement()
         try cancellation.check()
         failureStage = "focused-handle"
-        guard backend.matches(focused, captured.element) else { throw SelectionReplacement.Issue.staleSelection }
+        guard backend.matches(focused, element) else { throw SelectionReplacement.Issue.staleSelection }
         failureStage = "state-read"
-        var state = try backend.state(of: captured.element)
+        var state = try backend.state(of: element)
         state.requiresFrontmostApplication = requireFrontmostApplication || state.prefersPaste
         try cancellation.check()
         failureStage = "state-match"
@@ -1000,9 +1195,9 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
         let stillFocused = try readFocusedElement()
         try cancellation.check()
         failureStage = "final-focused-handle"
-        guard backend.matches(stillFocused, captured.element) else { throw SelectionReplacement.Issue.staleSelection }
+        guard backend.matches(stillFocused, element) else { throw SelectionReplacement.Issue.staleSelection }
         failureStage = "final-selection-read"
-        let selection = try backend.selection(of: captured.element)
+        let selection = try backend.selection(of: element)
         try cancellation.check()
         failureStage = "final-selection-match"
         selectedTextMatch = TextMutationRange.identical(selection.text, captured.text)
@@ -1022,7 +1217,17 @@ final class SelectionReplacementSession<Backend: SelectionReplacementBackend> {
             // Consume before the call: an AX timeout can mean that the remote app
             // wrote successfully but its reply was lost. Retrying must never write twice.
             target = nil
-            try backend.write(text, to: captured.element, expected: state)
+            do {
+                try backend.write(text, to: element, expected: state)
+            } catch SelectionReplacement.Issue.unwrittenNeedsPaste {
+                // Proven nothing written: the same lease comes back for one paste, in front.
+                target = Target(
+                    token: captured.token, element: element, processID: captured.processID, text: captured.text,
+                    range: captured.range, created: now(), pasteOnly: true)
+                cancellation.reopen()
+                failureStage = "focus-unavailable"
+                throw SelectionReplacement.Issue.focusUnavailable
+            }
         }
         completed = true
         return captured.processID
@@ -1075,10 +1280,26 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
             let error = AXUIElementCopyAttributeValue(
                 configure(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute as CFString, &value)
             if error == .noValue || (error == .success && value == nil) {
+                // The app in front may answer no focus while its window shows it.
+                if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                    front != ProcessInfo.processInfo.processIdentifier,
+                    let found = AccessibilityTreeWake.windowFocus(in: front)
+                {
+                    return configure(found)
+                }
                 throw SelectionReplacement.Issue.focusUnavailable
             }
             guard error == .success, let value else { throw issue(error) }
-            return try element(value)
+            let found = try element(value)
+            if AccessibilityTreeWake.standsInForFocus(found) {
+                var pid: pid_t = 0
+                if AXUIElementGetPid(found, &pid) == .success, let inWindow = AccessibilityTreeWake.windowFocus(in: pid)
+                {
+                    return configure(inWindow)
+                }
+                throw SelectionReplacement.Issue.focusUnavailable
+            }
+            return found
         }
     }
     private static func noFocus(_ error: Error) -> Bool { error as? SelectionReplacement.Issue == .focusUnavailable }
@@ -1095,10 +1316,16 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
         if error == .noValue || error == .attributeUnsupported || error == .notImplemented
             || (error == .success && value == nil)
         {
+            if let found = AccessibilityTreeWake.windowFocus(in: processID) { return configure(found) }
             throw SelectionReplacement.Issue.focusUnavailable
         }
         guard error == .success, let value else { throw issue(error) }
-        return try element(value)
+        let found = try element(value)
+        if AccessibilityTreeWake.standsInForFocus(found) {
+            if let inWindow = AccessibilityTreeWake.windowFocus(in: processID) { return configure(inWindow) }
+            throw SelectionReplacement.Issue.focusUnavailable
+        }
+        return found
     }
 
     func frontmostProcessID() throws -> Int32? {
@@ -1192,6 +1419,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
     // landed can't be read back, so callers say Pasted, not Replaced. Unconfirmed,
     // the text stays on the clipboard rather than restoring before a late paste.
     func pasteOverMarker(_ text: String, to element: AXUIElement, processID: Int32, selected: String) throws {
+        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
         let lease = try TextDeliveryClipboardLease(clipboard: SystemDeliveryClipboard(), text: text)
         var posted = false
         defer { if !posted { try? lease.restoreIfOwned() } }
@@ -1442,7 +1670,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
     func state(of element: AXUIElement) throws -> SelectionReplacementState {
         // Do not read protected content merely to validate a previous selection.
         guard try !isProtected(element) else {
-            throw SelectionReplacement.Issue.unsupported
+            throw SelectionReplacement.Issue.protectedField
         }
         let process = try processID(element)
         let delivery = AXTextDeliveryBackend()
@@ -1460,14 +1688,20 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
         var settable = DarwinBoolean(false)
         let capability = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable)
         guard capability == .success else { throw issue(capability) }
-        let editable = try optionalBool(element, kAXIsEditableAttribute) ?? settable.boolValue
+        // A single-line field with no selected-text setter can still take its whole value
+        // (the write ladder splices the selection in).
+        let valueWritable =
+            !settable.boolValue && role(element).map(Self.singleLineRoles.contains) == true
+            && self.settable(element, kAXValueAttribute)
+        let writable = settable.boolValue || valueWritable
+        let editable = try optionalBool(element, kAXIsEditableAttribute) ?? writable
         let enabled = try optionalBool(element, kAXEnabledAttribute) ?? true
         // Noncontiguous selections do not have a single unambiguous target.
         let ranges = try optionalRead(element, kAXSelectedTextRangesAttribute) as? [Any]
         return try SelectionReplacementState(
             processID: process, selectedText: selectedText(element), range: selectedRange(element, allowCaret: true),
             isEditable: editable, isEnabled: enabled,
-            supportsReplacement: settable.boolValue && (ranges?.count ?? 1) == 1)
+            supportsReplacement: writable && (ranges?.count ?? 1) == 1)
     }
 
     // Placement only: a missing rectangle falls back to the pointer.
@@ -1570,7 +1804,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
                 }
             }
         }
-        guard try !isProtected(element) else { throw SelectionReplacement.Issue.unsupported }
+        guard try !isProtected(element) else { throw SelectionReplacement.Issue.protectedField }
         failureStage = "write-value-read"
         if expected.prefersPaste {
             // Editable web documents (Mail's message body) expose their text
@@ -1583,6 +1817,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
                 original = text
             } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
             failureStage = "web-paste"
+            guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
             do {
                 try AXTextDeliveryBackend().pasteReplacement(text, to: element, expected: expected, original: original)
             } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
@@ -1611,19 +1846,92 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
                 throw SelectionReplacement.Issue.staleSelection
             }
         }
-        failureStage = "write-setter"
-        let error = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
-        guard error == .success else {
-            if [.attributeUnsupported, .notImplemented, .apiDisabled].contains(error) { throw issue(error) }
+        // The selected text, then (single-line fields only, which hold no formatting) the
+        // whole value with the selection spliced in; each read back, and the next tried only
+        // while the field still reads exactly as before. Both unwritten: a paste, in front.
+        func attempt(_ name: String, _ value: CFString) throws -> SelectionWriteLadder.Attempt {
+            failureStage = name
+            let error = AXUIElementSetAttributeValue(element, name as CFString, value)
+            if error == .success { return .accepted }
+            if [.attributeUnsupported, .notImplemented].contains(error) { return .unsupported }
+            if error == .apiDisabled { throw issue(error) }
             throw SelectionReplacement.Issue.uncertain
         }
-        failureStage = "acknowledgement"
-        try acknowledgement.wait {
-            SelectionReplacementAcknowledgement.Receipt(
-                processID: try self.processID(element),
-                valueFingerprint: SelectionReplacementAcknowledgement.fingerprint(try self.value(element)))
+        var steps: [() throws -> SelectionWriteLadder.Attempt] = [
+            { try attempt(kAXSelectedTextAttribute, text as CFString) }
+        ]
+        if let role = self.role(element), Self.singleLineRoles.contains(role), settable(element, kAXValueAttribute) {
+            let spliced = (original as NSString).replacingCharacters(in: expected.range, with: text)
+            steps.append { try attempt(kAXValueAttribute, spliced as CFString) }
+        }
+        do {
+            try SelectionWriteLadder.run(
+                steps: steps,
+                confirm: {
+                    failureStage = "acknowledgement"
+                    try acknowledgement.wait {
+                        SelectionReplacementAcknowledgement.Receipt(
+                            processID: try self.processID(element),
+                            valueFingerprint: SelectionReplacementAcknowledgement.fingerprint(try self.value(element)))
+                    }
+                },
+                untouched: {
+                    guard let now = try? self.value(element), let latest = try? self.selection(of: element) else {
+                        return false
+                    }
+                    return now == original && latest.range == expected.range
+                        && TextMutationRange.identical(latest.text, expected.selectedText)
+                })
+        } catch SelectionReplacement.Issue.unwrittenNeedsPaste {
+            selectionReplacementLogger.notice("Replacement unwritten stage=\(failureStage, privacy: .public)")
+            completed = true
+            throw SelectionReplacement.Issue.unwrittenNeedsPaste
         }
         completed = true
+    }
+    static let singleLineRoles: Set<String> = [kAXTextFieldRole, kAXComboBoxRole, "AXSearchField"]
+    private func settable(_ element: AXUIElement, _ name: String) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success && settable.boolValue
+    }
+
+    // The field's background writes changed nothing: its own paste, in front, read back.
+    func pasteSelection(_ text: String, to element: AXUIElement, expected: SelectionReplacementState) throws {
+        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
+        guard let original = try? value(element) else { throw SelectionReplacement.Issue.unsupported }
+        do {
+            try AXTextDeliveryBackend().pasteReplacement(
+                text, to: element, expected: expected, original: original, preferredOnly: false)
+        } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
+    }
+
+    // A selection the app gave only through its own Copy (CopiedSelectionPaste).
+    func pasteOverCopied(_ text: String, processID: Int32, selected: String) throws {
+        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
+        func post(_ key: CGKeyCode) -> Bool {
+            guard isFrontmost(processID), !IsSecureEventInputEnabled(),
+                let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
+                let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+            else { return false }
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            down.postToPid(processID)
+            up.postToPid(processID)
+            return true
+        }
+        switch CopiedSelectionPaste.run(
+            clipboard: SystemDeliveryClipboard(), selected: selected, text: text,
+            copy: { post(CommandKeyCodes.copy) }, paste: { post(CommandKeyCodes.paste) })
+        {
+        case .pasted: return
+        case .unchanged:
+            selectionReplacementLogger.error("Replacement failed stage=copied-paste-unchanged")
+            throw SelectionReplacement.Issue.unsupported
+        case .stale: throw SelectionReplacement.Issue.staleSelection
+        case .unavailable:
+            if IsSecureEventInputEnabled() { throw SelectionReplacement.Issue.secureInput }
+            throw SelectionReplacement.Issue.failed
+        }
     }
 }
 

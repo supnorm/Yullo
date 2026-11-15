@@ -209,7 +209,7 @@ import SwiftUI
         }
         guard let token = selection.replacementToken else {
             Self.copy(result)
-            chip.show(Self.cannotEdit(in: sourcePID), near: bounds, for: 6, status: .done)
+            chip.show(Self.cannotEdit(selection.limit), near: bounds, for: 6, status: .done)
             return
         }
         do {
@@ -245,11 +245,17 @@ import SwiftUI
         #endif
         _ = try await SelectionReplacement.replace(token: token, with: text)
     }
-    // Read-only text, or an app that takes no edits: the result is on the clipboard.
-    static func cannotEdit(in processID: Int32?) -> String {
-        processID.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName }.map {
-            L10n.format("%@ doesn’t let Yullo edit this text. Result copied: paste it with ⌘V.", $0)
-        } ?? L10n.tr("Can’t edit here. Result copied: paste it with ⌘V.")
+    // No write lease: the result is on the clipboard, and the reason told apart
+    // as the review tells it (SelectionVoiceEdit.cannotReplace).
+    static func cannotEdit(_ limit: SelectionReader.WriteLimit?) -> String {
+        if let message = AccessibilityGrant.current().message {
+            return L10n.sentences([message, L10n.tr("Result copied.")])
+        }
+        switch limit {
+        case .readOnly: return L10n.tr("This text is read-only. Result copied: paste it with ⌘V.")
+        case .unreachable, nil:
+            return L10n.tr("Yullo couldn’t reach this text field. Result copied: paste it with ⌘V.")
+        }
     }
 
     static func editMessage(for error: Error) -> String {
@@ -273,6 +279,7 @@ import SwiftUI
         switch outcome {
         case .selection: return
         case .empty: chip.show(L10n.tr("Select text first."), near: bounds, for: 1.5)
+        case .passwordField: chip.show(L10n.tr("Yullo doesn’t edit password fields."), near: bounds, for: 2.5)
         case .unreadable:
             // Every read refused is Yullo's permission, not the app: say how to fix it.
             if let message = AccessibilityGrant.checked("read-selection").message {
@@ -348,7 +355,7 @@ import SwiftUI
         }
         guard let token = selection.replacementToken else {
             // Read-only text (a web page or PDF).
-            copied(Self.cannotEdit(in: sourcePID))
+            copied(Self.cannotEdit(selection.limit))
             return
         }
         do {
@@ -363,6 +370,8 @@ import SwiftUI
             copied(L10n.tr("Selection changed. Result copied."))
         } catch SelectionReplacement.Issue.uncertain {
             chip.show(L10n.tr("Check the text. Yullo couldn’t confirm the change."), near: bounds, for: 5)
+        } catch SelectionReplacement.Issue.secureInput {
+            copied(L10n.sentences([SelectionVoiceEdit.secureInputReason(), L10n.tr("Result copied.")]))
         } catch {
             if !Task.isCancelled { copied(L10n.tr("Couldn’t replace the text. Result copied.")) }
         }

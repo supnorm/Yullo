@@ -64,6 +64,10 @@ final class PermissionSettingsController: ObservableObject {
     @Published private(set) var isRequestingMicrophone = false
     // Enable… was pressed in this visit: a row still off then names the remove-and-add step.
     @Published private(set) var askedAccessibility = false
+    // Back in Yullo after Enable… with the row still off: only then the remove-and-add step,
+    // since right after Enable… the list has just opened and a first grant can't be stale.
+    @Published private(set) var returnedAfterAsking = false
+    private var awaitingReturn = false
     private let backend: PermissionSettingsBackend
     private var request: Task<Void, Never>?
     private var revision = UUID()
@@ -81,6 +85,7 @@ final class PermissionSettingsController: ObservableObject {
     func refresh() {
         guard isPresented else { return }
         status = backend.status()
+        if awaitingReturn { returnedAfterAsking = true }
     }
     func disappear() {
         isPresented = false
@@ -121,6 +126,7 @@ final class PermissionSettingsController: ObservableObject {
         if !current.accessibility { backend.requestAccessibility() }
         backend.openAccessibilitySettings()
         refresh()
+        awaitingReturn = true
         if status?.accessibility == false { watchForGrant(.accessibility) }
     }
     // System Settings changes arrive while Yullo is in the background, where no

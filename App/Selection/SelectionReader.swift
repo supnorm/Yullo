@@ -13,13 +13,20 @@ enum SelectionReader {
         // The token pastes over a page selection rather than writing the field:
         // what lands can't be read back, so success says Pasted.
         var pastes = false
+        // Why there is no token, when there is none.
+        var limit: WriteLimit? = nil
     }
+    // Why read text can't be written back: Yullo found no field to write (the app
+    // published no focus or no selection it can change), or the text is read-only.
+    enum WriteLimit: Equatable { case unreachable, readOnly }
     // What a selection shortcut found: text, a focused field with nothing selected,
     // or nothing Yullo could read (no Accessibility text, a protected field, an error).
     enum Outcome {
         case selection(Result)
         case empty
         case unreadable
+        // A password field: never read, never written.
+        case passwordField
         var selection: Result? {
             if case .selection(let result) = self { return result }
             return nil

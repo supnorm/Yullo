@@ -989,8 +989,28 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
                 var value: CFTypeRef?
                 let error = AXUIElementCopyAttributeValue(
                     configured(AXUIElementCreateSystemWide()), kAXFocusedUIElementAttribute as CFString, &value)
-                if error == .noValue || (error == .success && value == nil) { throw TextDeliveryFocusIssue.unavailable }
+                if error == .noValue || (error == .success && value == nil) {
+                    // The app in front may answer no focus while its window shows it.
+                    if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                        front != ProcessInfo.processInfo.processIdentifier,
+                        let found = AccessibilityTreeWake.windowFocus(in: front)
+                    {
+                        return found
+                    }
+                    throw TextDeliveryFocusIssue.unavailable
+                }
                 guard error == .success, let value else { throw issue(error) }
+                if CFGetTypeID(value) == AXUIElementGetTypeID(),
+                    AccessibilityTreeWake.standsInForFocus(unsafeBitCast(value, to: AXUIElement.self))
+                {
+                    var pid: pid_t = 0
+                    if AXUIElementGetPid(unsafeBitCast(value, to: AXUIElement.self), &pid) == .success,
+                        let found = AccessibilityTreeWake.windowFocus(in: pid)
+                    {
+                        return found
+                    }
+                    throw TextDeliveryFocusIssue.unavailable
+                }
                 return value
             }
         } catch is TextDeliveryFocusIssue {
@@ -1313,11 +1333,15 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
     }
     // Selected-text replacement shares the proven paste/clipboard owner, but
     // cannot borrow a dictation token or fall back after an uncertain AX write.
+    // `preferredOnly: false`: a field whose AX writes read back as nothing written; any
+    // field that takes a paste then gets one.
     func pasteReplacement(
-        _ text: String, to element: AXUIElement, expected: SelectionReplacementState, original: String
+        _ text: String, to element: AXUIElement, expected: SelectionReplacementState, original: String,
+        preferredOnly: Bool = true
     ) throws {
         let current = try state(of: element)
-        guard TextDeliveryMutation.prefersPaste(in: current), current.writable,
+        guard preferredOnly ? TextDeliveryMutation.prefersPaste(in: current) : current.supportsPaste,
+            current.writable,
             current.processID == expected.processID, current.range == expected.range,
             expected.range.length > 0, TextMutationRange.identical(current.selectedText, expected.selectedText),
             current.valueFingerprint == fingerprint(original)

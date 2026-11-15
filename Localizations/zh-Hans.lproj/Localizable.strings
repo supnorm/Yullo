@@ -4,8 +4,6 @@
 "%1$@ will write %2$@ instead." = "%1$@ 将改为输出“%2$@”。";
 "%1$@ → %2$@" = "%1$@ → %2$@";
 "%@ copy" = "%@ 的副本";
-"%@ doesn’t let Yullo edit this text. Paste the result there with ⌘V." = "%@ 不允许 Yullo 编辑这段文本。请在那里用 ⌘V 粘贴结果。";
-"%@ doesn’t let Yullo edit this text. Result copied: paste it with ⌘V." = "%@ 不允许 Yullo 编辑这段文本。结果已拷贝：用 ⌘V 粘贴。";
 "%@ has reached its usage limit." = "%@ 已达到使用上限。";
 "%@ isn’t in Ollama anymore." = "%@ 已不在 Ollama 中。";
 "%@ isn’t one of your languages." = "%@ 不在你的语言中。";
@@ -39,6 +37,7 @@
 "4 lines" = "4 行";
 "5 minutes" = "5 分钟";
 "7 days" = "7 天";
+"A better dictation pick" = "更合适的听写推荐";
 "A compact alternative to the larger Whisper models." = "体积较小的 Whisper 模型选择。";
 "A compact, fast translation model." = "小巧快速的翻译模型。";
 "A format for each app, in Dictation settings." = "为每个 App 设定格式，在听写设置中。";
@@ -125,6 +124,7 @@
 "Also recognizes 22 Chinese dialects." = "还可识别 22 种汉语方言。";
 "Also speaks more than 18 Chinese dialects." = "还能说 18 种以上的汉语方言。";
 "American English" = "美式英语";
+"Another app is keeping typing private, so Yullo can’t replace the text." = "另一个 App 正在保护键盘输入，Yullo 无法替换这段文本。";
 "Anywhere in text" = "文中任意位置";
 "App" = "App";
 "App preferences" = "App 偏好";
@@ -143,17 +143,18 @@
 "Apple Speech language" = "Apple 语音识别语言";
 "Apple Speech needs a language download." = "Apple 语音识别需要先下载语言包。";
 "Apple Speech recognizes one language at a time. For mixed languages, use a multilingual model." = "Apple 语音使用一种选定的语言，混合语言输入请使用多语言模型。";
-"Apple Speech · on device" = "Apple 语音 · 本机识别";
+"Apple Speech · on this Mac" = "Apple 语音 · 本机识别";
 "Apple can’t translate this pair offline. Connect to the internet to use your API." = "Apple 无法离线翻译这对语言，请联网后使用 API。";
 "Apple fallback doesn’t support this language pair." = "备用的 Apple 翻译不支持这对语言。";
 "Apple fallback off" = "已关闭 Apple 备用识别";
 "Apple fallback on" = "已开启 Apple 备用识别";
 "Apple fallback was also unavailable." = "备用的 Apple 翻译也不可用。";
+"Apple translates until it’s downloaded." = "下载完成前由 Apple 翻译。";
 "Apple translation doesn’t use your personal vocabulary." = "Apple 翻译不支持应用个人翻译用词。";
 "Apple translation languages" = "Apple 翻译语言";
 "Apple translation support. Language pairs may need a download." = "Apple 翻译支持的语言。语言组合可能需要下载。";
 "Apple translation, Apple Speech and macOS voices. Dictation types exactly what you say." = "Apple 翻译、Apple 语音识别和 macOS 嗓音。听写按你说的原话输入。";
-"Apple · on device" = "Apple · 本机翻译";
+"Apple · on this Mac" = "Apple · 本机翻译";
 "Apple’s model can’t write in %@." = "Apple 模型不支持用%@写作。";
 "Apple’s model can’t write in this language." = "Apple 模型不支持此语言。";
 "Apple’s model declined this text." = "Apple 模型拒绝处理这段文字。";
@@ -180,6 +181,7 @@
 "Back" = "返回";
 "Back to Setup" = "返回设置向导";
 "Before" = "修改前";
+"Better %@ translation" = "更好的%@翻译";
 "Bold text" = "粗体文本";
 "Bottom bar" = "底部栏";
 "Bottom bar when there’s no text field." = "无输入框时显示在底部。";
@@ -200,7 +202,6 @@
 "Cancel refinement" = "取消润色";
 "Cancel test" = "取消测试";
 "Cancel translation" = "取消翻译";
-"Can’t edit here. Result copied: paste it with ⌘V." = "这里无法编辑。结果已拷贝：用 ⌘V 粘贴。";
 "Casual message" = "轻松消息";
 "Center on current screen" = "在当前屏幕居中";
 "Change shortcut, %@" = "修改快捷键：%@";
@@ -263,6 +264,7 @@
 "Choose a valid date range." = "请选择有效的日期范围。";
 "Choose a voice model file listed in Yullo’s catalog." = "请选择 Yullo 模型目录中列出的朗读模型文件。";
 "Choose a voice or enter its voice ID." = "请选择嗓音，或输入嗓音 ID。";
+"Choose a writer above first." = "请先在上方选择写作服务。";
 "Choose a writing service" = "选择写作服务";
 "Choose a writing service…" = "选择写作服务…";
 "Choose an API or CLI connection to refine writing." = "请选择 API 或 CLI 连接以润色文本。";
@@ -352,7 +354,7 @@
 "Couldn’t connect. Check the URL, network and model." = "无法连接。请检查地址、网络和模型。";
 "Couldn’t copy the command. Select and copy it above." = "无法拷贝命令。请选中上方命令后拷贝。";
 "Couldn’t copy. Try again." = "无法拷贝，请重试。";
-"Couldn’t download the model. Check your internet connection and try again." = "无法下载模型，请检查网络连接后重试。";
+"Couldn’t download the model. Check your internet connection." = "无法下载模型，请检查网络连接。";
 "Couldn’t edit this text." = "无法修改这段文字。";
 "Couldn’t finish recognition." = "未能完成识别。";
 "Couldn’t finish the translation. Try again." = "未能完成翻译，请重试。";
@@ -422,6 +424,7 @@
 "Dictation Writes: %@" = "听写输出：%@";
 "Dictation Writes: %@ (%@)" = "听写输出：%@（%@）";
 "Dictation needs attention" = "听写遇到问题";
+"Dictation needs the microphone." = "听写需要使用麦克风。";
 "Dictation shortcut" = "听写快捷键";
 "Dictation shortcut: %@" = "听写快捷键：%@";
 "Dictation shortcuts" = "听写快捷键";
@@ -533,6 +536,7 @@
 "For %@, Yullo uses a Mac voice." = "朗读%@时，Yullo 会使用 Mac 嗓音。";
 "For Refine and formats like Email." = "用于润色和“邮件”等格式。";
 "For Translation and dictation in another language." = "用于翻译，以及听写成其他语言。";
+"For dictation." = "用于听写。";
 "For example: replying to my landlord in German, polite" = "例如：用德语回复房东，礼貌";
 "For offline translation. Your settings don’t change." = "供离线翻译使用，不会更改你的设置。";
 "For recordings longer than 30 seconds, choose Whisper, Qwen3 ASR or Parakeet in Dictation settings." = "录音超过 30 秒时，请在“听写”设置中选择 Whisper、Qwen3 ASR 或 Parakeet。";
@@ -676,7 +680,6 @@
 "Local model" = "本地模型";
 "Local speech generation failed. Try another voice or model." = "本地语音生成失败，请尝试其他嗓音或模型。";
 "Local transcription failed. Try again or choose another model." = "本地转写失败，请重试或选择其他模型。";
-"Local translation failed. Try another model." = "本地翻译失败，请尝试其他模型。";
 "Local translation is still stopping. Try again in a moment." = "本地翻译仍在停止中，请稍后重试。";
 "Made to fit you" = "为你量身定制";
 "Mail" = "邮件";
@@ -828,6 +831,7 @@
 "Part of this wasn’t translated." = "部分内容未翻译。";
 "Partial draft" = "未完成的草稿";
 "Paste" = "粘贴";
+"Paste a command in Terminal, then come back." = "在“终端”中粘贴命令，然后返回。";
 "Paste a new key, or leave blank to keep the saved key" = "粘贴新密钥，留空则保留";
 "Paste and run the command in Terminal to sign in." = "在终端中粘贴并运行命令以登录。";
 "Paste your key" = "粘贴你的密钥";
@@ -899,7 +903,11 @@
 "Recognition options" = "识别选项";
 "Recognizer available" = "识别模型可用";
 "Recommended" = "推荐";
+"Recommended for %1$@. It doesn’t recognize %2$@." = "推荐用于%1$@。它无法识别%2$@。";
+"Recommended for %@ on this Mac." = "推荐在这台 Mac 上用于%@。";
+"Recommended for this Mac." = "推荐用于这台 Mac。";
 "Recommended: %@" = "推荐：%@";
+"Recommended: a smaller download for this Mac." = "推荐：适合这台 Mac 的较小下载。";
 "Record Shortcut…" = "录制快捷键…";
 "Record another instruction" = "重新口述指令";
 "Recording" = "录音";
@@ -945,12 +953,16 @@
 "Removes the saved key from this Mac. Your provider’s key stays active." = "只移除此 Mac 上存储的密钥；服务商处的密钥仍然有效。";
 "Reopen Yullo from Applications or with your shortcut." = "从“应用程序”重新打开 Yullo，或使用全局快捷键。";
 "Replace" = "替换";
+"Replace in many more apps" = "在更多 App 中替换";
 "Replace in more apps" = "在更多 App 中替换";
+"Replace needs Accessibility." = "替换需要辅助功能权限。";
 "Replace now works in Chrome, Google Docs and Slides, Obsidian and other apps built on Chrome." = "“替换”现在可用于 Chrome、Google 文档和幻灯片、Obsidian，以及其他基于 Chrome 的 App。";
+"Replace now works in many more apps, and you can correct the result by hand in the review before it goes in." = "“替换”现在可用于更多 App，结果放入之前，你还可以在确认界面中亲手修改。";
 "Replace selected text" = "替换所选文本";
 "Replace selection" = "替换所选文本";
 "Replace the selection in the original app." = "在原 App 中将所选文本替换为译文。";
 "Replace this spelling" = "要替换的识别结果";
+"Replace works in many more apps, and setting up no longer asks for an API key." = "“替换”现在可用于更多 App，设置时也不再需要 API 密钥。";
 "Replacing selection…" = "正在替换选区…";
 "Replacing text needs Accessibility access." = "替换文本需要辅助功能权限。";
 "Replacing…" = "正在替换…";
@@ -970,6 +982,7 @@
 "Restricted" = "受系统限制";
 "Result" = "结果";
 "Result actions" = "记录操作";
+"Result copied." = "结果已拷贝。";
 "Result status" = "结果状态";
 "Result type" = "记录类型";
 "Resume recording" = "继续录音";
@@ -1020,6 +1033,7 @@
 "Search terms" = "搜索词条";
 "Search voices" = "搜索嗓音";
 "Seconds" = "秒";
+"Secure Keyboard Entry is on in %@, so Yullo can’t replace the text." = "%@ 开启了“安全键盘输入”，Yullo 无法替换这段文本。";
 "Select All" = "全选";
 "Select text first, then say how to change it." = "请先选中文字，再说出修改指令。";
 "Select text first." = "请先选择文字。";
@@ -1044,6 +1058,7 @@
 "Set up another service…" = "设置其他服务…";
 "Set up command-line tools…" = "配置命令行工具…";
 "Set up history…" = "设置历史记录…";
+"Set up without an API key" = "无需 API 密钥即可设置";
 "Set up…" = "开始配置…";
 "Settings" = "设置";
 "Settings · ⌘," = "设置 · ⌘,";
@@ -1081,6 +1096,7 @@
 "Sign-in command" = "登录命令";
 "Sign-off" = "结尾敬语";
 "Signature" = "签名";
+"Signed in · no key needed" = "已登录 · 无需密钥";
 "Situation" = "情景";
 "Skip" = "跳过";
 "Social post" = "社交媒体帖子";
@@ -1128,7 +1144,6 @@
 "Start selected text in edit mode" = "选中文本默认可编辑";
 "Start the guide anytime in %@." = "之后可随时在“%@”中打开使用引导。";
 "Start voice translation" = "开始语音翻译";
-"Start with your words" = "从你的表达开始";
 "Status is per direction. macOS shares these with other apps." = "状态按翻译方向显示。macOS 会与其他 App 共用这些下载。";
 "Stop" = "停止";
 "Stop reading aloud" = "停止朗读";
@@ -1182,10 +1197,12 @@
 "The edited text was cut off. Try a shorter selection." = "修改结果被截断，请选择较短的原文。";
 "The first-run guide now takes you through translation, writing, permissions and dictation, lets you try them as you go, and reopens from the menu where you left off." = "首次使用引导现在会带你完成翻译、写作、权限和听写的设置，过程中可以随时“试试”；从菜单重新打开时，会回到你上次停下的地方。";
 "The full v3 model. Compare its quality and speed with Turbo." = "完整 v3 模型，可与 Turbo 比较识别效果和速度。";
+"The guide sets up writing with Apple’s model or an app you already have, so no API key is needed." = "使用引导会用 Apple 的模型或你已有的 App 来设置写作，无需 API 密钥。";
 "The heard-as phrase must differ from the preferred spelling." = "需要纠正的词语必须与首选写法不同。";
 "The insertion point changed. Copy the result when ready." = "输入位置已变化，请确认后拷贝结果。";
 "The language button cycles through these in this order, then Same as I speak." = "语言按钮按此顺序切换这些语言，然后是“我说的语言”。";
 "The language download couldn’t be completed." = "未能完成语言下载。";
+"The local model couldn’t run on this Mac." = "本地模型无法在这台 Mac 上运行。";
 "The local model didn’t return a complete translation." = "本地模型未返回完整译文。";
 "The local speech runtime is missing. Reinstall Yullo." = "本地语音组件缺失，请重新安装 Yullo。";
 "The local translation runtime is missing. Reinstall Yullo." = "缺少本地翻译运行组件，请重新安装 Yullo。";
@@ -1228,7 +1245,6 @@
 "They work however you installed them, and your own instructions for them stay out of Yullo’s requests." = "无论以何种方式安装都能使用，你为它们写的个人指令不会进入 Yullo 的请求。";
 "Third-party notices" = "第三方声明";
 "This JSON document is too large to translate." = "此 JSON 文档过大，无法翻译。";
-"This app doesn’t let Yullo edit this text. Paste the result there with ⌘V." = "此 App 不允许 Yullo 编辑这段文本。请在那里用 ⌘V 粘贴结果。";
 "This app preference changed. Close the editor and try again." = "此 App 偏好已更改。请关闭编辑器后重试。";
 "This application already has a preference." = "此 App 已有偏好设置。";
 "This deletes every saved result, including results hidden by search or filters." = "此操作将删除所有已存储的结果，包括因搜索或筛选而未显示的结果。";
@@ -1254,6 +1270,8 @@
 "This spelling already has an entry for the same use or target language." = "此写法已有相同用途或目标语言的条目。";
 "This term changed. Close the editor and try again." = "词条已变更。请关闭编辑窗口后重试。";
 "This text field doesn’t support direct insertion." = "此输入框不支持直接输入。";
+"This text is read-only." = "这段文本是只读的。";
+"This text is read-only. Result copied: paste it with ⌘V." = "这段文本是只读的。结果已拷贝：用 ⌘V 粘贴。";
 "This text is too long for a CLI translation." = "此文本过长，无法通过 CLI 翻译。";
 "This text is too long for personal vocabulary processing." = "文本过长，无法应用个人词库。";
 "This text is too long for the local model. Try a shorter passage." = "此文本超出了本地模型的长度限制，请尝试较短的文本。";
@@ -1265,6 +1283,7 @@
 "This vocabulary entry could not be prepared." = "无法处理这条词汇。";
 "To" = "目标语言";
 "To insert directly, click a text field before you start dictating." = "若要直接输入，请先点按一个输入框，再开始语音输入。";
+"To replace the text, select it again." = "要替换这段文本，请重新选中它。";
 "To type into other apps, Yullo needs Accessibility." = "要输入到其他 App，Yullo 需要辅助功能权限。";
 "Today" = "今天";
 "Too many changes to show." = "修改太多，无法逐一显示。";
@@ -1278,6 +1297,7 @@
 "Translate as" = "译为";
 "Translate as I type" = "输入时自动翻译";
 "Translate from" = "源语言";
+"Translate into" = "翻译成";
 "Translate into %@" = "翻译成%@";
 "Translate now" = "立即翻译";
 "Translate right away" = "立即翻译";
@@ -1291,6 +1311,7 @@
 "Translated with Apple until %@ is downloaded." = "在 %@ 下载完成前，已使用 Apple 翻译。";
 "Translated with Apple. API key access was unavailable." = "未能读取 API 密钥，已用 Apple 翻译。";
 "Translating" = "正在翻译";
+"Translating on this Mac now works on the newest Macs too. If it still can’t run, Yullo tells you and offers another way." = "在这台 Mac 上翻译现在也适用于最新的 Mac。如果仍无法运行，Yullo 会告诉你并提供其他方式。";
 "Translating “%@”…" = "正在翻译“%@”…";
 "Translating…" = "正在翻译…";
 "Translation" = "翻译";
@@ -1303,8 +1324,8 @@
 "Translation failed. Previous result kept." = "翻译失败，已保留上次结果。";
 "Translation follows as you type." = "译文随输入即时呈现。";
 "Translation model" = "翻译模型";
+"Translation on the newest Macs" = "在最新的 Mac 上翻译";
 "Translation service" = "翻译服务";
-"Translation target" = "翻译成";
 "Translation term" = "翻译用词";
 "Translations, dictation and writing appear here." = "翻译、听写和写作结果会显示在这里。";
 "Translator" = "翻译";
@@ -1315,10 +1336,12 @@
 "Try dictation" = "试试听写";
 "Try each on the sample." = "在示例上逐一试试。";
 "Try one sentence" = "试着说一句";
+"Try works once Apple’s model is ready." = "Apple 模型就绪后即可试用。";
 "Turn off" = "关闭";
 "Turn on" = "开启";
 "Turn on Apple Intelligence…" = "开启 Apple 智能…";
 "Turn on Yullo in Accessibility settings. If it’s already on, remove Yullo with the – button, then add it again with +." = "请在“辅助功能”设置中开启 Yullo。如果已经开启，请用“–”按钮移除 Yullo，然后用“+”重新添加。";
+"Turn on Yullo in the list that opened." = "在打开的列表中开启 Yullo。";
 "Turning your speech into text…" = "正在把语音转成文字…";
 "Tutorial" = "使用引导";
 "Type a change" = "输入修改";
@@ -1431,11 +1454,17 @@
 "Yullo" = "Yullo";
 "Yullo can’t find Codex CLI’s sign-in file. Run %@ in Terminal to sign in." = "Yullo 找不到 Codex CLI 的登录文件。请在“终端”中运行 %@ 进行登录。";
 "Yullo couldn’t confirm the insertion. Check the original app before using it again." = "无法确认是否已输入。再次使用前，请先检查原来的 App。";
+"Yullo couldn’t reach this text field." = "Yullo 无法访问这个文本框。";
+"Yullo couldn’t reach this text field. Result copied: paste it with ⌘V." = "Yullo 无法访问这个文本框。结果已拷贝：用 ⌘V 粘贴。";
+"Yullo doesn’t edit password fields." = "Yullo 不会编辑密码栏。";
 "Yullo lives in your menu bar and helps you write, in any app, without leaving your work." = "Yullo 常驻菜单栏，帮你在任意 App 中书写，无需离开手头的工作。";
 "Yullo now works in more apps, and on a new Mac from the first launch." = "Yullo 现在能在更多 App 中使用，在新 Mac 上首次打开就能用。";
+"Yullo recommends the dictation model that fits the languages you speak." = "Yullo 会推荐适合你所说语言的听写模型。";
 "Yullo sample voice" = "Yullo 示例嗓音";
 "Yullo shortcuts" = "Yullo 快捷键";
 "Yullo stays in the menu bar after you close this window." = "关闭此窗口后，Yullo 会留在菜单栏中。";
+"Yullo uses it as soon as it’s on." = "一旦开启，Yullo 就会使用它。";
+"Yullo uses it once the download finishes." = "下载完成后，Yullo 会使用它。";
 "Yullo uses your microphone for local dictation and voice translation. Audio is processed on this Mac." = "Yullo 使用你的麦克风进行本地听写和语音翻译。音频在这台 Mac 上处理。";
 "Yullo window" = "Yullo 窗口";
 "Yullo works on this Mac only. API and CLI services are off." = "Yullo 仅在这台 Mac 上运行，API 和 CLI 服务已关闭。";

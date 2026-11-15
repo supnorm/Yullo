@@ -271,7 +271,7 @@ struct Preferences: Codable, Equatable {
     // Ollama on this Mac (or an address the person set); one model writes and translates.
     var ollamaHost = CoreOllama.defaultHost
     var ollamaModel = ""
-    // Write with Apple · on device: the writer that writes instead when Apple's
+    // Write with Apple · on this Mac: the writer that writes instead when Apple's
     // model can't ("" writes nothing and says why). Never chosen automatically.
     var appleWriterFallback = ""
     // Session only: the language a resolved format writes in. Never saved as a default.

@@ -174,7 +174,9 @@ enum GuidedTourSample {
     @Published private(set) var outcome: Outcome?
     @Published private(set) var source: Source?
     @Published private(set) var issue: String?
-    @Published private(set) var issueOffersService = false
+    // The one fix the failure points to, offered beside its reason.
+    @Published private(set) var issueFix: TranslationRecoveryAction?
+    var issueOffersService: Bool { if case .anotherService = issueFix { return true } else { return false } }
     // A stand-in service produced the result (Apple's translation, the backup writer, a Mac voice).
     @Published private(set) var note: String?
     // The sample as a Try rewrote it in place; a new Try starts from the original.
@@ -212,7 +214,7 @@ enum GuidedTourSample {
                 self.finish()
                 // A service that can't answer for now names why and offers another one.
                 let fix = TranslationRecoveryAction.fixing(error, writing: task != .translate)
-                self.issueOffersService = { if case .anotherService = fix { return true } else { return false } }()
+                self.issueFix = fix
                 self.issue = TranslationRecoveryAction.notice(error.localizedDescription, fix: fix)
             }
         }
@@ -249,6 +251,7 @@ enum GuidedTourSample {
         let stop = stopSpeech
         finish()
         issue = nil
+        issueFix = nil
         note = nil
         stop?()
     }
@@ -315,6 +318,7 @@ struct GuidedTourStep: View {
     let cancel: () -> Void
     let showYullo: () -> Void
     let setUpWriting: () -> Void
+    var recover: ((TranslationRecoveryAction) -> Void)? = nil
     let enableAccessibility: () -> Void
     // Hidden when no mail app is known.
     var mail: MailApplication? = nil
@@ -360,9 +364,15 @@ struct GuidedTourStep: View {
                     Text(L10n.tr("Shortcuts for selected text need Accessibility."))
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    // Asked here, in place; the tour's results stay.
-                    Button(L10n.tr("Allow Accessibility…"), action: enableAccessibility).buttonStyle(.link)
+                    // The grant has one home: Set up… goes back to Permissions, as Writing's does.
+                    Button(L10n.tr("Set up…"), action: enableAccessibility).buttonStyle(.link)
                         .fixedSize()
+                        .background {
+                            #if YULLO_TESTING
+                                YulloActionPresentationProbe(
+                                    title: "Guide set up accessibility", action: enableAccessibility)
+                            #endif
+                        }
                 }.font(.system(size: 12)).padding(.horizontal, 4).accessibilityIdentifier("guide-tour-accessibility")
             }
             SettingsSection(L10n.tr("Also")) {
@@ -372,7 +382,7 @@ struct GuidedTourStep: View {
                     readAloudRow
                     if let mail { emailRow(mail) }
                     row(
-                        "Made to fit you", caption: "A format for each app, in Dictation settings.", key: nil,
+                        "What dictation writes", caption: "A format for each app, in Dictation settings.", key: nil,
                         showsKey: false
                     ) {
                         Button(L10n.tr("Open…"), action: openFormats)
@@ -512,7 +522,8 @@ struct GuidedTourStep: View {
     }
 
     private var sampleCard: some View {
-        GuideSampleCard(session: session, speech: speech, cancel: cancel, setUpWriting: setUpWriting)
+        GuideSampleCard(
+            session: session, speech: speech, cancel: cancel, setUpWriting: setUpWriting, recover: recover)
     }
 
     // The mail app's row: Add makes Email what dictation writes there.
@@ -618,6 +629,9 @@ struct GuidedTourStep: View {
 // The guide's sample: the text each Try works on, the step's own Try when it has one,
 // then what the Try is doing, its result or why it could not run.
 struct GuideSampleCard: View {
+    private func perform(_ fix: TranslationRecoveryAction) {
+        if let recover { recover(fix) } else { setUpWriting() }
+    }
     struct TryAction {
         let title: String
         let enabled: Bool
@@ -630,6 +644,8 @@ struct GuideSampleCard: View {
     let cancel: () -> Void
     let setUpWriting: () -> Void
     var tryAction: TryAction? = nil
+    // Carries out a failed Try's fix in the guide; nil keeps only Choose Another Service….
+    var recover: ((TranslationRecoveryAction) -> Void)? = nil
 
     // The Sample card reports where it is, so windows and pills a Try opens sit by it.
     @Environment(\.guideSampleFrame) private var reportFrame
@@ -659,6 +675,13 @@ struct GuideSampleCard: View {
             .id(session.rewritten ?? GuidedTourSample.text).transition(.opacity)
             .animation(.easeInOut(duration: 0.25), value: session.rewritten)
             .accessibilityIdentifier("guide-tour-sample-text")
+            // Why Try can't run yet, said where Try is, not only in its help.
+            if let tryAction, !tryAction.enabled, let help = tryAction.help, session.running == nil,
+                session.issue == nil
+            {
+                Text(help).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("guide-try-blocked")
+            }
             if session.outcome != nil || session.running != nil || session.issue != nil || session.note != nil {
                 Divider().padding(.vertical, 3)
                 if let outcome = session.outcome {
@@ -696,16 +719,20 @@ struct GuideSampleCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text(issue).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
-                        if session.issueOffersService {
+                        if let fix = session.issueFix, recover != nil || session.issueOffersService {
                             Spacer(minLength: 8)
-                            Button(L10n.tr("Choose Another Service…"), action: setUpWriting).font(.system(size: 11))
-                                .fixedSize()
-                                .background {
-                                    #if YULLO_TESTING
-                                        YulloActionPresentationProbe(
-                                            title: "Guide another service", action: setUpWriting)
-                                    #endif
-                                }
+                            Button(L10n.tr(fix.titleKey(writingSetup: fix == .writingService))) { perform(fix) }.font(
+                                .system(size: 11)
+                            )
+                            .fixedSize()
+                            .background {
+                                #if YULLO_TESTING
+                                    YulloActionPresentationProbe(
+                                        title: session.issueOffersService ? "Guide another service" : "Guide fix try",
+                                        value: fix.titleKey(writingSetup: fix == .writingService),
+                                        action: { perform(fix) })
+                                #endif
+                            }
                         }
                     }
                 }
