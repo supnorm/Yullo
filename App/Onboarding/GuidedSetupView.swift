@@ -1216,6 +1216,7 @@ struct GuideAppleLanguages: Identifiable {
     @ViewBuilder private var stepForwardButtons: some View {
         if progress.step == .more {
             Button(L10n.tr("Done"), action: finishSetup).keyboardShortcut(.defaultAction).fixedSize()
+                .background { guideExitProbe("guide-done", action: finishSetup) }
         } else if progress.step == .trial {
             // Trying lives in the card; the footer only moves on or leaves.
             if acceptedTrialText.isEmpty {
@@ -2095,14 +2096,11 @@ private struct GuideWindowFit: NSViewRepresentable {
             else { return }
             let content = window.contentRect(forFrameRect: window.frame)
             let chrome = window.frame.height - content.height
-            let screen = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? .greatestFiniteMagnitude
-            let target = min(
-                max(content.height - room + step, window.contentMinSize.height, 360), screen - chrome)
+            let target = max(content.height - room + step, window.contentMinSize.height, 360)
             guard abs(target - content.height) >= 1 else { return }
-            var frame = window.frame
-            frame.origin.y += frame.height - (target + chrome)
-            frame.size.height = target + chrome
-            window.setFrame(frame, display: true)
+            // The one sizing rule keeps the minimum, the top edge and the screen.
+            AppWindowSizing.enforce(
+                window, size: NSSize(width: window.frame.width, height: target + chrome), reason: "guide step")
         }
     }
 }

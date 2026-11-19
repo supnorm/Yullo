@@ -151,12 +151,15 @@ import SwiftUI
             if frame.minY < screen.minY + 8 { frame.origin.y = screen.minY + 8 }
             // Widened for its actions, it stays on the screen.
             if frame.maxX > screen.maxX - 8 { frame.origin.x = max(screen.minX + 8, screen.maxX - 8 - frame.width) }
+            // Never taller or wider than its screen; the review scrolls beyond that.
+            frame = WindowPlacement.bounded(frame, minimum: .zero, in: screen)
         }
         guard
             abs(frame.height - window.frame.height) > 0.5 || abs(frame.width - window.frame.width) > 0.5
                 || frame.origin != window.frame.origin
         else { return }
-        window.contentMinSize = NSSize(width: least, height: height)
+        window.contentMinSize = NSSize(
+            width: least, height: min(height, window.contentRect(forFrameRect: frame).height))
         if animated, window.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             state.settlesAt = Date().addingTimeInterval(reflow ? MorphTiming.reflow : 0.18)
             NSAnimationContext.runAnimationGroup { context in

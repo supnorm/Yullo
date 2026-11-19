@@ -2,21 +2,26 @@
 set -euo pipefail
 usage() {
     cat <<'USAGE'
-Usage: bash scripts/make-update.sh [--archive PATH] [--staging DIR] [--download-url-prefix URL]
+Usage: bash scripts/make-update.sh [--archive PATH] [--staging DIR] [--download-url-prefix URL] [--notes DIR]
 Stage a Sparkle update locally: sign the archive with the Keychain's EdDSA key,
 then write appcast.xml beside it. Nothing is published, pushed or uploaded.
   --archive              a .zip or .dmg of the release; default: zips build/Yullo.app
   --staging              default: ../release-staging (outside the working copy)
   --download-url-prefix  where the archive will be served; default https://yullo.me/updates/
+  --notes                update notes, one folder per version with en.txt, de.txt, es.txt,
+                         fr.txt, it.txt, zh-Hans.txt and zh-Hant.txt; default: UpdateNotes
+  --ed-key-file          a private EdDSA key file instead of the Keychain's (tests only)
 USAGE
 }
 cd "$(dirname "$0")/.."
-ARCHIVE="" STAGING="$PWD/../release-staging" PREFIX="https://yullo.me/updates/"
+ARCHIVE="" STAGING="$PWD/../release-staging" PREFIX="https://yullo.me/updates/" NOTES="$PWD/UpdateNotes" KEY=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --archive) ARCHIVE="$2"; shift 2 ;;
         --staging) STAGING="$2"; shift 2 ;;
         --download-url-prefix) PREFIX="$2"; shift 2 ;;
+        --notes) NOTES="$(cd "$2" && pwd)"; shift 2 ;;
+        --ed-key-file) KEY=(--ed-key-file "$2"); shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -77,8 +82,11 @@ print(f"Staging Yullo {version} ({build})")
 PY
 
 cp "$ARCHIVE" "$STAGING/$NAME"
-SIGNATURE="$("$SPARKLE/bin/sign_update" -p "$STAGING/$NAME")"
-"$SPARKLE/bin/generate_appcast" --download-url-prefix "$PREFIX" --link "https://yullo.me" "$STAGING"
+SIGNATURE="$("$SPARKLE/bin/sign_update" ${KEY[@]+"${KEY[@]}"} -p "$STAGING/$NAME")"
+# Every release stays in the feed; Sparkle offers each copy the newest one it can run.
+"$SPARKLE/bin/generate_appcast" ${KEY[@]+"${KEY[@]}"} --maximum-versions 0 \
+    --download-url-prefix "$PREFIX" --link "https://yullo.me" "$STAGING"
+python3 -I scripts/update-notes.py "$STAGING/appcast.xml" "$NOTES"
 # EdDSA signatures are deterministic: the appcast must carry sign_update's.
 if ! grep -q "sparkle:edSignature=\"$SIGNATURE\"" "$STAGING/appcast.xml"; then
     echo "appcast.xml does not carry the archive's signature." >&2

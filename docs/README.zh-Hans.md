@@ -116,7 +116,7 @@ flowchart LR
 curl -fsSL https://yullo.me/install.sh | sh
 ```
 
-脚本会下载最新版本，用公布的 SHA-256 校验，然后把 Yullo 放进“应用程序”。如有需要，可以先[阅读脚本](https://github.com/supnorm/yullo.me/blob/main/install.sh)。
+脚本会下载最新版本，用公布的 SHA-256 校验，然后把 Yullo 放进“应用程序”。如有需要，可以先[阅读脚本](install.sh)。
 
 更喜欢磁盘映像？从[最新版本](https://github.com/supnorm/Yullo/releases/latest)下载 `Yullo.dmg`，把 Yullo 拖进“应用程序”。首次打开时，macOS 会请你确认：系统设置 › 隐私与安全性 › 仍要打开。
 
@@ -128,13 +128,13 @@ curl -fsSL https://yullo.me/install.sh | sh
 
 ## 从源码构建
 
-需要 Xcode 26（用 `xcode-select` 选中）、`git`、`cmake` 和 `python3`。
+需要一台搭载 Apple 芯片、运行 macOS 26 的 Mac，[Xcode 26](https://apps.apple.com/app/xcode/id497799835) 和 `cmake`（例如 `brew install cmake`）。
 
 ```sh
-git clone https://github.com/supnorm/Yullo.git
-cd Yullo
+git clone https://github.com/supnorm/Yullo.git ~/Yullo
+cd ~/Yullo
 
-# 仅首次：创建本地代码签名身份
+# 仅首次：在钥匙串中创建本地代码签名证书
 # （或使用你自己的证书：--identity <40 位 SHA-1>）
 python3 scripts/setup-signing.py --create
 
@@ -145,7 +145,11 @@ bash build.sh
 python3 scripts/install-update.py --destination /Applications/Yullo.app
 ```
 
-首次构建会获取并校验内置运行时的固定版本源码，因此需要联网，耗时也较长。请把文件夹放在较短的路径中，例如 `~/Yullo`，因为语音运行时对路径长度有限制。构建从不下载模型。
+`bash build.sh` 会先检查这台 Mac，逐条列出问题和修复它的命令，例如未接受的 Xcode 许可、缺少的 Metal 工具链或 `cmake`。只运行检查：`python3 scripts/doctor.py`。
+
+首次构建会获取并校验内置运行时的固定版本源码，因此需要联网和约 5 GB 可用空间，耗时也较长。请把文件夹放在较短的路径中，例如 `~/Yullo`，因为语音运行时对路径长度有限制。构建从不下载模型。
+
+如果已经从 yullo.me 安装了 Yullo，最后一步会在替换那一份之前说明会有哪些变化：macOS 会重新请求 Yullo 的权限，Yullo 内的更新检查仍会提供正式发布版。要回到正式发布版，运行上面的安装命令即可。
 
 <details>
 <summary><b>仓库结构</b></summary>

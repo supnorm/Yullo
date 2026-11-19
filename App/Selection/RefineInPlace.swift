@@ -16,6 +16,7 @@ import SwiftUI
         var testRewrite: ((String) async throws -> String)?
         var testRewriteNote: String?
         var testReplace: ((UUID, String) async throws -> Void)?
+        var testHolds: ((UUID) async -> Bool)?
         var testChip: RefineChip { chip }
     #endif
     var openInYullo: ((String) -> Void)?
@@ -149,10 +150,8 @@ import SwiftUI
             return
         }
         let bounds = selection.bounds, original = selection.text
-        var written = false
-        defer {
-            if !written, let token = selection.replacementToken { SelectionReplacement.invalidate(if: token) }
-        }
+        // The lease ends with this edit, whichever way it ends; a written one is already spent.
+        defer { if let token = selection.replacementToken { SelectionReplacement.invalidate(if: token) } }
         guard !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             showSelectionHint(for: .empty, near: bounds)
             return
@@ -207,26 +206,10 @@ import SwiftUI
             chip.show(L10n.tr("Nothing changed."), near: bounds, for: 2.5)
             return
         }
-        guard let token = selection.replacementToken else {
-            Self.copy(result)
-            chip.show(Self.cannotEdit(selection.limit), near: bounds, for: 6, status: .done)
-            return
-        }
-        do {
-            try await replaceSelection(token, with: result)
-            written = true
-            chip.show(
-                standIn ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Edited · ⌘Z to undo"), near: bounds,
-                for: standIn == nil ? 3 : 5, status: .done,
-                action: (L10n.tr("Open in Yullo"), { [weak self] in self?.openReview?(original, instruction, result) }))
-        } catch SelectionReplacement.Issue.uncertain {
-            written = true
-            chip.show(L10n.tr("Check the text. Yullo couldn’t confirm the change."), near: bounds, for: 5)
-        } catch {
-            // The selection or the app changed, or the write failed: nothing was written.
-            Self.copy(result)
-            chip.show(L10n.tr("Selection changed. Result copied."), near: bounds, for: 5, status: .done)
-        }
+        await writeBack(
+            result, over: selection,
+            done: standIn ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Edited · ⌘Z to undo"),
+            lingering: standIn != nil, open: { [weak self] in self?.openReview?(original, instruction, result) })
     }
 
     private func showFailure(_ message: String, error: Error, near bounds: CGRect?) {
@@ -246,13 +229,14 @@ import SwiftUI
         _ = try await SelectionReplacement.replace(token: token, with: text)
     }
     // No write lease: the result is on the clipboard, and the reason told apart
-    // as the review tells it (SelectionVoiceEdit.cannotReplace).
+    // as the review tells it (ReplacementNotice.cannotReplace).
     static func cannotEdit(_ limit: SelectionReader.WriteLimit?) -> String {
         if let message = AccessibilityGrant.current().message {
             return L10n.sentences([message, L10n.tr("Result copied.")])
         }
         switch limit {
-        case .readOnly: return L10n.tr("This text is read-only. Result copied: paste it with ⌘V.")
+        // Read-only text is never told to be pasted into: the same line as a write refused.
+        case .readOnly: return L10n.tr("This text is read-only. Result copied.")
         case .unreachable, nil:
             return L10n.tr("Yullo couldn’t reach this text field. Result copied: paste it with ⌘V.")
         }
@@ -285,7 +269,7 @@ import SwiftUI
             if let message = AccessibilityGrant.checked("read-selection").message {
                 chip.show(
                     message, near: bounds, for: 10,
-                    action: (L10n.tr("Open Accessibility Settings"), { AccessibilityGrant.openSettings() }))
+                    action: (L10n.tr("Allow Accessibility…"), { AccessibilityGrant.openSettings() }))
             } else {
                 chip.show(L10n.tr("Couldn’t read the selection."), near: bounds, for: 2.5)
             }
@@ -300,6 +284,8 @@ import SwiftUI
             return
         }
         let bounds = selection.bounds
+        // The lease ends with this run, whichever way it ends; a written one is already spent.
+        defer { if let token = selection.replacementToken { SelectionReplacement.invalidate(if: token) } }
         guard selection.text.utf8.count <= 262_144 else {
             chip.show(L10n.tr("That selection is too long to replace."), near: bounds, for: 5)
             return
@@ -348,33 +334,70 @@ import SwiftUI
             chip.show(L10n.tr("Already reads well"), near: bounds, for: 2.5, status: .done)
             return
         }
-        // A result that can't go back where it came from is kept on the clipboard.
-        func copied(_ message: String) {
-            Self.copy(result)
-            chip.show(message, near: bounds, for: 5, status: .done)
-        }
+        let original = selection.text
+        // A stand-in's result says which one wrote it, for as long as a message stays.
+        await writeBack(
+            result, over: selection,
+            done: note ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Refined · ⌘Z to undo"),
+            lingering: note != nil, open: { [weak self] in self?.openInYullo?(original) })
+    }
+
+    // Every in-place result goes back the one way the review's Replace does: the shared
+    // capture lease, written with read-back, the clipboard put back, a paste only in front.
+    // A try the app didn't answer, with nothing written and the lease still held, is made
+    // once more, as Replace would be pressed again in the review. A result that can't go
+    // back where it came from is kept on the clipboard, with the same reason the review
+    // gives. True when the text was written, or may have been.
+    @discardableResult private func writeBack(
+        _ result: String, over selection: SelectionReader.Result, done: String, lingering: Bool,
+        open: @escaping () -> Void
+    ) async -> Bool {
+        let bounds = selection.bounds
         guard let token = selection.replacementToken else {
-            // Read-only text (a web page or PDF).
-            copied(Self.cannotEdit(selection.limit))
-            return
+            // Read-only text (a web page or PDF), or a field Yullo couldn't reach.
+            Self.copy(result)
+            chip.show(Self.cannotEdit(selection.limit), near: bounds, for: 6, status: .copied)
+            return false
         }
-        do {
-            try await replaceSelection(token, with: result)
-            let original = selection.text
-            // A stand-in's result says which one wrote it, for as long as a message stays.
+        var issue: SelectionReplacement.Issue?
+        for attempt in 0..<2 {
+            do {
+                try await replaceSelection(token, with: result)
+                chip.show(
+                    done, near: bounds, for: lingering ? 5 : 3, status: .done, action: (L10n.tr("Open in Yullo"), open))
+                return true
+            } catch SelectionReplacement.Issue.uncertain {
+                chip.show(L10n.tr("Check the text. Yullo couldn’t confirm the change."), near: bounds, for: 5)
+                return true
+            } catch {
+                issue = error as? SelectionReplacement.Issue
+                guard attempt == 0, !Task.isCancelled, SelectionReplacement.Issue.retryable.contains(issue),
+                    await holds(token)
+                else { break }
+                try? await Task.sleep(nanoseconds: Self.retryPause)
+                guard !Task.isCancelled else { break }
+            }
+        }
+        SelectionReplacement.invalidate(if: token)
+        // Cancelled by its key or Cancel, which already said Nothing changed.
+        guard !Task.isCancelled else { return false }
+        Self.copy(result)
+        let message = ReplacementNotice.copiedAfterAttempt(issue)
+        if issue == .permission {
             chip.show(
-                note ?? L10n.tr(selection.pastes ? "Pasted · ⌘Z to undo" : "Refined · ⌘Z to undo"), near: bounds,
-                for: note == nil ? 3 : 5, status: .done,
-                action: (L10n.tr("Open in Yullo"), { [weak self] in self?.openInYullo?(original) }))
-        } catch SelectionReplacement.Issue.staleSelection {
-            copied(L10n.tr("Selection changed. Result copied."))
-        } catch SelectionReplacement.Issue.uncertain {
-            chip.show(L10n.tr("Check the text. Yullo couldn’t confirm the change."), near: bounds, for: 5)
-        } catch SelectionReplacement.Issue.secureInput {
-            copied(L10n.sentences([SelectionVoiceEdit.secureInputReason(), L10n.tr("Result copied.")]))
-        } catch {
-            if !Task.isCancelled { copied(L10n.tr("Couldn’t replace the text. Result copied.")) }
+                message, near: bounds, for: 10, status: .copied,
+                action: (L10n.tr("Allow Accessibility…"), { AccessibilityGrant.openSettings() }))
+        } else {
+            chip.show(message, near: bounds, for: 6, status: .copied)
         }
+        return false
+    }
+    static let retryPause: UInt64 = 300_000_000
+    private func holds(_ token: UUID) async -> Bool {
+        #if YULLO_TESTING
+            if let testHolds { return await testHolds(token) }
+        #endif
+        return await SelectionReplacement.holds(token)
     }
 
     static func rewrite(_ text: String, plan: CoreOutputPlan, preferences: Preferences) async throws -> String {
@@ -423,7 +446,8 @@ import SwiftUI
 // A small status chip under the selection, drawn as the recording indicator's
 // compact HUD. It never takes focus; VoiceOver announces each final state.
 @MainActor final class RefineChip {
-    enum Status { case plain, working, done }
+    // `copied`: nothing was written; the result is on the clipboard (never the ✓ of a write).
+    enum Status { case plain, working, done, copied }
 
     private let panel: NSPanel
     private let model = Model()
@@ -462,6 +486,7 @@ import SwiftUI
         var testShown: ((String, Status, Double?) -> Void)?
         private(set) var testAction: (() -> Void)?
         private(set) var testActionHelp: String?
+        private(set) var testActionTitle: String?
     #endif
 
     func show(
@@ -470,6 +495,7 @@ import SwiftUI
     ) {
         #if YULLO_TESTING
             testAction = action?.1
+            testActionTitle = action?.0
             testActionHelp = actionHelp
             if let testShown {
                 testShown(text, status, seconds)
@@ -599,6 +625,10 @@ struct RefineChipView: View {
             EmptyView()
         case .done:
             Image(systemName: "checkmark").font(.system(size: 11, weight: .medium))
+                .frame(width: 16).accessibilityHidden(true)
+        case .copied:
+            // The review's Copy glyph, in the same ink as the ✓.
+            Image(systemName: "doc.on.doc").font(.system(size: 11, weight: .medium))
                 .frame(width: 16).accessibilityHidden(true)
         case .working:
             TimelineView(.animation(minimumInterval: 0.35, paused: reduceMotion)) { context in

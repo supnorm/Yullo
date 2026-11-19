@@ -111,6 +111,8 @@ extension VoiceComparisonPresenting {
             window.setContentSize(
                 NSSize(width: min(740, max(460, visible.width - 48)), height: min(460, max(420, visible.height - 80))))
             window.center()
+            // On a screen smaller than its minimum the window still fits.
+            window.setFrame(WindowPlacement.bounded(window.frame, minimum: .zero, in: visible), display: false)
         }
         defer {
             // A dismissed older modal must not clear a later reader.

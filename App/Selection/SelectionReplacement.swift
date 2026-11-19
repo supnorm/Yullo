@@ -260,7 +260,14 @@ enum SelectionReplacement {
     // An app waking its accessibility tree can take more than one 0.5 s read to answer.
     static let replacementReadiness: TimeInterval = 2
 
+    #if YULLO_TESTING
+        // Live checks against stand-in apps: nothing is ever brought forward, so no paste is posted.
+        nonisolated(unsafe) static var testRestoreFocus: ((Int32) -> Bool)?
+    #endif
     @MainActor static func restoreApplicationFocus(_ processID: Int32) async -> Bool {
+        #if YULLO_TESTING
+            if let testRestoreFocus { return testRestoreFocus(processID) }
+        #endif
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard !Task.isCancelled, processID > 0,
             front == ProcessInfo.processInfo.processIdentifier || front == processID,
@@ -1355,29 +1362,12 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
     // clipboard is read, after the shortcut's own modifiers are released so the
     // app sees plain Command-C.
     func canPostCopy(to processID: Int32) -> Bool {
-        let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
-        while !CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty,
-            ProcessInfo.processInfo.systemUptime < deadline
-        {
-            Thread.sleep(forTimeInterval: 0.02)  // AX worker only.
-        }
+        CommandKeyPost.awaitPlainKeys()
         return processID > 0 && processID != ProcessInfo.processInfo.processIdentifier
-            && !IsSecureEventInputEnabled() && isFrontmost(processID)
+            && !CommandKeyPost.secureInput && isFrontmost(processID)
     }
     // Secure input is checked again right before posting.
-    func postCopy(to processID: Int32) -> Bool {
-        let key = CommandKeyCodes.copy
-        guard !IsSecureEventInputEnabled(),
-            let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-        else { return false }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.postToPid(processID)
-        up.postToPid(processID)
-        return true
-    }
+    func postCopy(to processID: Int32) -> Bool { CommandKeyPost.post(CommandKeyCodes.copy, to: processID) }
 
     func processID(_ element: AXUIElement) throws -> Int32 {
         var pid: pid_t = 0
@@ -1419,16 +1409,11 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
     // landed can't be read back, so callers say Pasted, not Replaced. Unconfirmed,
     // the text stays on the clipboard rather than restoring before a late paste.
     func pasteOverMarker(_ text: String, to element: AXUIElement, processID: Int32, selected: String) throws {
-        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
+        guard !CommandKeyPost.secureInput else { throw SelectionReplacement.Issue.secureInput }
+        CommandKeyPost.awaitPlainKeys()
         let lease = try TextDeliveryClipboardLease(clipboard: SystemDeliveryClipboard(), text: text)
         var posted = false
         defer { if !posted { try? lease.restoreIfOwned() } }
-        let key = CommandKeyCodes.paste
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-        else { throw SelectionReplacement.Issue.failed }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
         do {
             try lease.performIfOwned(validating: {
                 guard try self.frontmostProcessID() == processID,
@@ -1436,11 +1421,12 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
                     TextMutationRange.identical(try self.selectedMarkerText(element), selected)
                 else { throw SelectionReplacement.Issue.staleSelection }
             }) {
-                down.postToPid(processID)
-                up.postToPid(processID)
-                posted = true
+                posted = CommandKeyPost.post(CommandKeyCodes.paste, to: processID)
             }
         } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
+        guard posted else {
+            throw CommandKeyPost.secureInput ? SelectionReplacement.Issue.secureInput : .failed
+        }
         let deadline = ProcessInfo.processInfo.systemUptime + 1.2
         while ProcessInfo.processInfo.systemUptime < deadline {
             if let now = try? selectedMarkerText(element), !TextMutationRange.identical(now, selected) {
@@ -1784,6 +1770,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
         case .staleDestination: return .staleSelection
         case .failed: return .failed
         case .uncertain: return .uncertain
+        case .secureInput: return .secureInput
         }
     }
 
@@ -1817,7 +1804,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
                 original = text
             } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
             failureStage = "web-paste"
-            guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
+            guard !CommandKeyPost.secureInput else { throw SelectionReplacement.Issue.secureInput }
             do {
                 try AXTextDeliveryBackend().pasteReplacement(text, to: element, expected: expected, original: original)
             } catch let error as TextDelivery.Issue { throw selectionIssue(error) }
@@ -1897,7 +1884,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
 
     // The field's background writes changed nothing: its own paste, in front, read back.
     func pasteSelection(_ text: String, to element: AXUIElement, expected: SelectionReplacementState) throws {
-        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
+        guard !CommandKeyPost.secureInput else { throw SelectionReplacement.Issue.secureInput }
         guard let original = try? value(element) else { throw SelectionReplacement.Issue.unsupported }
         do {
             try AXTextDeliveryBackend().pasteReplacement(
@@ -1907,18 +1894,9 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
 
     // A selection the app gave only through its own Copy (CopiedSelectionPaste).
     func pasteOverCopied(_ text: String, processID: Int32, selected: String) throws {
-        guard !IsSecureEventInputEnabled() else { throw SelectionReplacement.Issue.secureInput }
-        func post(_ key: CGKeyCode) -> Bool {
-            guard isFrontmost(processID), !IsSecureEventInputEnabled(),
-                let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
-                let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-            else { return false }
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.postToPid(processID)
-            up.postToPid(processID)
-            return true
-        }
+        guard !CommandKeyPost.secureInput else { throw SelectionReplacement.Issue.secureInput }
+        CommandKeyPost.awaitPlainKeys()
+        func post(_ key: CGKeyCode) -> Bool { isFrontmost(processID) && CommandKeyPost.post(key, to: processID) }
         switch CopiedSelectionPaste.run(
             clipboard: SystemDeliveryClipboard(), selected: selected, text: text,
             copy: { post(CommandKeyCodes.copy) }, paste: { post(CommandKeyCodes.paste) })
@@ -1929,7 +1907,7 @@ private final class AXSelectionReplacementBackend: SelectionReplacementBackend, 
             throw SelectionReplacement.Issue.unsupported
         case .stale: throw SelectionReplacement.Issue.staleSelection
         case .unavailable:
-            if IsSecureEventInputEnabled() { throw SelectionReplacement.Issue.secureInput }
+            if CommandKeyPost.secureInput { throw SelectionReplacement.Issue.secureInput }
             throw SelectionReplacement.Issue.failed
         }
     }

@@ -340,6 +340,19 @@ struct SettingsView: View {
     // While the guide is open it is the whole window: no sidebar or page
     // chrome, only the guide with its own step rail.
     private var setupFocused: Bool { page == .setup && guidePresented }
+    @State private var layoutWidth: CGFloat = 0
+    // The guide mode last told to the window owner; each change is told once.
+    private final class SetupFocusReport { var last: Bool? }
+    @State private var setupFocusReport = SetupFocusReport()
+    private func reportSetupFocus(_ focused: Bool) {
+        guard setupFocusReport.last != focused else { return }
+        setupFocusReport.last = focused
+        setupFocusChanged?(focused)
+    }
+    @State private var sidebarContinues = false
+    private var compactLayout: Bool {
+        !setupFocused && layoutWidth > 0 && layoutWidth < AppWindowSizing.settingsMinimum.width - 0.5
+    }
     private var settingsLayout: some View {
         return HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 16) {
@@ -364,55 +377,87 @@ struct SettingsView: View {
                 }
                 .onKeyPress(.downArrow) { moveSearchSelection(1) }
                 .onKeyPress(.upArrow) { moveSearchSelection(-1) }
-                ScrollView {
-                    VStack(spacing: 2) {
-                        if !search.isEmpty {
-                            searchResults
-                        } else {
-                            ForEach(SettingsPage.displayOrder) { section in
-                                Button {
-                                    if page != section { navigate(to: section) }
-                                    search = ""
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: section.symbol)
-                                            .font(.system(size: section == .translation ? 13 : 15, weight: .regular))
-                                            .foregroundStyle(
-                                                page == section && search.isEmpty
-                                                    ? AnyShapeStyle(Palette.accent) : AnyShapeStyle(.primary)
-                                            )
-                                            .frame(width: 22, height: 22).accessibilityHidden(true)
-                                        Text(section.title)
-                                            .font(
-                                                .system(
-                                                    size: 13,
-                                                    weight: page == section && search.isEmpty ? .semibold : .regular)
-                                            )
-                                            .lineLimit(2).multilineTextAlignment(.leading)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading).padding(
-                                        .horizontal, 12
-                                    )
-                                    .accessibilityElement(children: .ignore).accessibilityLabel(section.title)
-                                    .help(section.title)
-                                    .contentShape(Rectangle())
-                                    .background { rowBackground(section) }
-                                    .onHover { inside in
-                                        withAnimation(.easeOut(duration: 0.12)) {
-                                            if inside {
-                                                hoveredPage = section
-                                            } else if hoveredPage == section {
-                                                hoveredPage = nil
+                ScrollViewReader { sidebarScroll in
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            if !search.isEmpty {
+                                searchResults
+                            } else {
+                                ForEach(SettingsPage.displayOrder) { section in
+                                    Button {
+                                        if page != section { navigate(to: section) }
+                                        search = ""
+                                    } label: {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: section.symbol)
+                                                .font(
+                                                    .system(size: section == .translation ? 13 : 15, weight: .regular)
+                                                )
+                                                .foregroundStyle(
+                                                    page == section && search.isEmpty
+                                                        ? AnyShapeStyle(Palette.accent) : AnyShapeStyle(.primary)
+                                                )
+                                                .frame(width: 22, height: 22).accessibilityHidden(true)
+                                            Text(section.title)
+                                                .font(
+                                                    .system(
+                                                        size: 13,
+                                                        weight: page == section && search.isEmpty ? .semibold : .regular
+                                                    )
+                                                )
+                                                .lineLimit(2).multilineTextAlignment(.leading)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading).padding(
+                                            .horizontal, 12
+                                        )
+                                        .accessibilityElement(children: .ignore).accessibilityLabel(section.title)
+                                        .help(section.title)
+                                        .contentShape(Rectangle())
+                                        .background { rowBackground(section) }
+                                        .onHover { inside in
+                                            withAnimation(.easeOut(duration: 0.12)) {
+                                                if inside {
+                                                    hoveredPage = section
+                                                } else if hoveredPage == section {
+                                                    hoveredPage = nil
+                                                }
                                             }
                                         }
-                                    }
-                                }.buttonStyle(.plain)
+                                    }.buttonStyle(.plain).id(section)
+                                }
                             }
                         }
-                    }
-                }.smallNativeScrollbars().frame(maxHeight: .infinity)
+                    }.smallNativeScrollbars().frame(maxHeight: .infinity)
+                        // Rows below the edge (a short window): the last one fades out, so the list
+                        // reads as continuing; at the end it is at full ink.
+                        .onScrollGeometryChange(for: Bool.self) { geometry in
+                            geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
+                        } action: { _, more in
+                            sidebarContinues = more
+                        }
+                        .mask {
+                            VStack(spacing: 0) {
+                                Rectangle()
+                                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                                    .frame(height: sidebarContinues ? 36 : 0)
+                            }
+                        }
+                        .background {
+                            #if YULLO_TESTING
+                                YulloActionPresentationProbe(
+                                    title: "settings-sidebar-list", value: sidebarContinues ? "continues" : "ends",
+                                    action: {})
+                            #endif
+                        }
+                        // The page shown is always in view, however it was reached.
+                        .onChange(of: page) { _, value in
+                            guard search.isEmpty else { return }
+                            withAnimation(.easeOut(duration: 0.15)) { sidebarScroll.scrollTo(value) }
+                        }
+                        .onAppear { sidebarScroll.scrollTo(page) }
+                }
                 HStack(spacing: 9) {
                     Image(
                         nsImage: colorScheme == .dark ? BrandArtwork.darkSettingsIcon : BrandArtwork.lightSettingsIcon
@@ -421,7 +466,7 @@ struct SettingsView: View {
                     Text("Yullo").font(BrandTypography.wordmark(size: 19)).tracking(-0.5)
                 }.padding(.horizontal, 12).padding(.vertical, 10)
                     .accessibilityElement(children: .combine).accessibilityIdentifier("settings-brand")
-            }.padding(.horizontal, 6).frame(width: 194)
+            }.padding(.horizontal, 6).frame(width: compactLayout ? 160 : 194)
                 .padding([.leading, .bottom], 8)
                 .modifier(SettingsSidebarPresence(shown: !setupFocused))
             VStack(alignment: .leading, spacing: 0) {
@@ -550,15 +595,28 @@ struct SettingsView: View {
                             .accessibilityIdentifier("settings-done")
                     }.padding(.top, 14)
                 }
-            }.padding(setupFocused ? 0 : 26).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }.frame(
-            minWidth: (setupFocused ? AppWindowSizing.setupMinimum : AppWindowSizing.settingsMinimum).width,
-            maxWidth: .infinity,
-            minHeight: (setupFocused ? AppWindowSizing.setupMinimum : AppWindowSizing.settingsMinimum).height,
-            maxHeight: .infinity
-        ).groupBoxStyle(SettingsCardGroupBoxStyle()).toggleStyle(SettingsRowToggleStyle())
-            .environment(\.locale, L10n.locale)
-            .environment(\.localizedLanguageNames, draft.showLocalizedLanguageNames)
+            }.padding(setupFocused ? 0 : (compactLayout ? 18 : 26))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        // The window owner holds each layout's minimum. The layout never asks for more than
+        // the window it is given: narrower than Settings' minimum (a small screen, or the
+        // moment between the guide and Settings) it tightens instead of drawing past the edge.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+        } action: {
+            layoutWidth = $0
+        }
+        .background {
+            #if YULLO_TESTING
+                // The laid-out root and the layout it shows, for window geometry checks.
+                YulloActionPresentationProbe(
+                    title: "settings-root", value: setupFocused ? "setup" : "settings", action: {})
+            #endif
+        }
+        .groupBoxStyle(SettingsCardGroupBoxStyle()).toggleStyle(SettingsRowToggleStyle())
+        .environment(\.locale, L10n.locale)
+        .environment(\.localizedLanguageNames, draft.showLocalizedLanguageNames)
 
     }
     private var settingsLifecycle: some View {
@@ -589,7 +647,10 @@ struct SettingsView: View {
                     reveal(anchor)
                     navigationTarget = anchor
                     // Welcome and the menu's Setup Guide… continue a guide left earlier at its step.
-                    if anchor == "experience-setup" { openGuide(resuming: true, fromSettings: false) }
+                    // The window was already sized for the guide; a guide that can't open returns it.
+                    if anchor == "experience-setup", !openGuide(resuming: true, fromSettings: false) {
+                        reportSetupFocus(false)
+                    }
                     // Opened plainly, Settings is ready to search: type a setting's name and ↩.
                     // Not when it opens at a row, or hosts the guide.
                     if initialAnchor == nil, !guidePresented {
@@ -632,6 +693,8 @@ struct SettingsView: View {
                             revealedSections: { revealedSections }))
                 #endif
             }
+            // The window follows the layout shown, whatever changed it.
+            .onChange(of: setupFocused) { _, focused in reportSetupFocus(focused) }
             .onChange(of: page) { _, value in
                 rememberedPage = value.rawValue
                 if value != .translation { appleLanguageManagerRequest = nil }
@@ -818,7 +881,7 @@ struct SettingsView: View {
     private func endGuide(keepingDraft: Bool = true) {
         cancelGuideTrial()
         guidePresented = false
-        setupFocusChanged?(false)
+        reportSetupFocus(false)
         if !keepingDraft { guidedDraft = nil }
         GuidedSetupResume.draft = guidedDraft
         invalidateSetupActions()
@@ -2216,8 +2279,8 @@ struct SettingsView: View {
     }
     // Start guide begins at its first step with any staged choices; Done
     // after a guide link continues at the step that link left.
-    private func openGuide(resuming: Bool, fromSettings: Bool) {
-        guard commitCoordinator.commit(), credentialIssue.isEmpty, persistenceIssue.isEmpty else { return }
+    @discardableResult private func openGuide(resuming: Bool, fromSettings: Bool) -> Bool {
+        guard commitCoordinator.commit(), credentialIssue.isEmpty, persistenceIssue.isEmpty else { return false }
         guideReturnsToSettings = fromSettings
         if !resuming { guidedDraft?.step = .choices }
         guideReturnAvailable = false
@@ -2229,7 +2292,8 @@ struct SettingsView: View {
         invalidateSetupActions()
         page = .setup
         guidePresented = true
-        setupFocusChanged?(true)
+        reportSetupFocus(true)
+        return true
     }
     private func finishSetupDismissal() {
         guard setupSheet == nil else { return }

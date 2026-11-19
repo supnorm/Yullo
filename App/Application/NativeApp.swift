@@ -31,48 +31,109 @@ enum AppWindowSizing {
     static let setupMinimum = NSSize(width: 540, height: 360)
     static let setupSize = NSSize(width: 640, height: 600)
 
+    #if YULLO_TESTING
+        // The screen windows are sized for, so checks keep every window off the real displays.
+        nonisolated(unsafe) static var testingVisibleFrame: CGRect?
+    #endif
+    // Where a bound found violated is reported: geometry only, never a window's text.
+    nonisolated(unsafe) static var report: (String) -> Void = { NSLog("%@", $0) }
+    // Each window's layout minimum: the size its content needs below any title bar.
+    nonisolated(unsafe) private static let minimums = NSMapTable<NSWindow, NSValue>.weakToStrongObjects()
+
+    // The visible screen a window is sized for: its own screen, or the main one while it is closed.
+    static func visibleFrame(for window: NSWindow) -> NSRect? {
+        #if YULLO_TESTING
+            if let stated = testingVisibleFrame { return stated }
+        #endif
+        return (window.screen ?? NSScreen.main)?.visibleFrame
+    }
     static func configure(_ window: NSWindow, minimum: NSSize) {
         window.styleMask.insert(.resizable)
-        window.contentMinSize = minimum
         window.contentResizeIncrements = NSSize(width: 1, height: 1)
+        setLayoutMinimum(minimum, of: window)
     }
-    // A large window moved from an external display must still fit when it is
-    // reopened on a smaller display. Ordinary presentation keeps its user size.
-    static func fit(_ window: NSWindow, in visible: NSRect) {
-        let content = window.contentRect(forFrameRect: window.frame).size
-        let chrome = window.frame.height - content.height
-        let width = min(content.width, max(window.contentMinSize.width, visible.width))
-        let height = min(content.height, max(window.contentMinSize.height, visible.height - chrome))
-        if width != content.width || height != content.height {
-            window.setContentSize(NSSize(width: width, height: height))
-        }
+    static func layoutMinimum(of window: NSWindow) -> NSSize? { minimums.object(forKey: window)?.sizeValue }
+    // A mode change (Settings or the guide) sets the minimum its layout needs; the next
+    // enforce applies it to the native minimum and the frame together.
+    static func setLayoutMinimum(_ minimum: NSSize, of window: NSWindow) {
+        minimums.setObject(NSValue(size: minimum), forKey: window)
+        window.contentMinSize = contentSize(window, frame: minimumFrame(window, layout: minimum))
     }
-    // Setup is focused in the Settings window: a compact frame that keeps the
-    // window's top centre. Returns the size that ending setup restores.
-    @discardableResult static func focusSetup(_ window: NSWindow, in visible: NSRect?) -> NSSize {
-        let previous = window.frame.size
-        window.contentMinSize = setupMinimum
-        GuideWindowFollowing.add(window)
-        resize(window, to: window.frameRect(forContentRect: NSRect(origin: .zero, size: setupSize)).size, in: visible)
-        return previous
+    // The layout's minimum as a frame size. Content that runs under a transparent title
+    // bar is laid out below it, so the title bar counts on top of the layout's height.
+    static func minimumFrame(_ window: NSWindow, layout minimum: NSSize) -> NSSize {
+        let content = window.contentRect(forFrameRect: window.frame)
+        let titlebar = max(0, content.height - window.contentLayoutRect.height)
+        return window.frameRect(
+            forContentRect: NSRect(origin: .zero, size: NSSize(width: minimum.width, height: minimum.height + titlebar))
+        ).size
     }
-    static func restoreSettings(_ window: NSWindow, size: NSSize, in visible: NSRect?) {
-        GuideWindowFollowing.remove(window)
-        window.contentMinSize = settingsMinimum
-        resize(window, to: size, in: visible)
-        if let visible { fit(window, in: visible) }
+    private static func contentSize(_ window: NSWindow, frame size: NSSize) -> NSSize {
+        window.contentRect(forFrameRect: NSRect(origin: .zero, size: size)).size
     }
-    private static func resize(_ window: NSWindow, to size: NSSize, in visible: NSRect?) {
+    // The one sizing rule for Yullo's resizable windows, applied on every show, restore, mode
+    // change and screen change: the window holds its layout's minimum and stays on its screen.
+    // A frame found outside those bounds is repaired and reported.
+    @discardableResult static func enforce(
+        _ window: NSWindow, size: NSSize? = nil, in screen: NSRect? = nil, reason: String
+    ) -> Bool {
+        guard let layout = layoutMinimum(of: window) else { return false }
+        let visible = screen ?? visibleFrame(for: window)
+        let least = minimumFrame(window, layout: layout)
+        let fitted = visible.map { NSSize(width: min(least.width, $0.width), height: min(least.height, $0.height)) }
+        let lower = fitted ?? least
+        window.contentMinSize = contentSize(window, frame: lower)
         let current = window.frame
-        var frame = NSRect(
-            x: current.midX - size.width / 2, y: current.maxY - size.height, width: size.width, height: size.height)
-        if let visible {
-            frame.size.width = min(frame.width, visible.width)
-            frame.size.height = min(frame.height, visible.height)
-            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
-            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        let target = WindowPlacement.bounded(current, size: size, minimum: lower, in: visible)
+        if size == nil, violates(current, lower: lower, visible: visible) {
+            report(
+                "Yullo window geometry (\(reason)): \(describe(window)) frame \(describe(current)) below or beyond its bounds; minimum \(describe(lower)) (layout \(describe(layout))), screen \(visible.map(describe) ?? "none"), scale \(window.backingScaleFactor); now \(describe(target))"
+            )
         }
-        window.setFrame(frame, display: false)
+        guard !approximatelyEqual(target, current) else { return false }
+        window.setFrame(target, display: window.isVisible)
+        return true
+    }
+    // Once the layout the change started has settled, the window is checked again.
+    static func recheckAfterLayout(_ window: NSWindow, reason: String) {
+        DispatchQueue.main.async { [weak window] in
+            guard let window, window.isVisible else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            enforce(window, reason: reason + ", after layout")
+        }
+    }
+    private static func violates(_ frame: NSRect, lower: NSSize, visible: NSRect?) -> Bool {
+        if frame.width < lower.width - 0.5 || frame.height < lower.height - 0.5 { return true }
+        guard let visible, visible.width > 0, visible.height > 0 else { return false }
+        return frame.minX < visible.minX - 0.5 || frame.maxX > visible.maxX + 0.5 || frame.minY < visible.minY - 0.5
+            || frame.maxY > visible.maxY + 0.5
+    }
+    private static func approximatelyEqual(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) < 0.5 && abs(a.minY - b.minY) < 0.5 && abs(a.width - b.width) < 0.5
+            && abs(a.height - b.height) < 0.5
+    }
+    private static func describe(_ window: NSWindow) -> String {
+        "window \(window.windowNumber) (\(String(describing: type(of: window))))"
+    }
+    private static func describe(_ rect: NSRect) -> String {
+        "\(Int(rect.minX.rounded())),\(Int(rect.minY.rounded())) \(Int(rect.width.rounded()))×\(Int(rect.height.rounded()))"
+    }
+    private static func describe(_ size: NSSize) -> String {
+        "\(Int(size.width.rounded()))×\(Int(size.height.rounded()))"
+    }
+    // Setup is focused in the Settings window: the guide's layout and its compact size.
+    static func focusSetup(_ window: NSWindow) {
+        setLayoutMinimum(setupMinimum, of: window)
+        GuideWindowFollowing.add(window)
+        enforce(
+            window, size: window.frameRect(forContentRect: NSRect(origin: .zero, size: setupSize)).size, reason: "guide"
+        )
+    }
+    // Settings again, at the size it had; never below what its layout needs.
+    static func restoreSettings(_ window: NSWindow, size: NSSize?) {
+        GuideWindowFollowing.remove(window)
+        setLayoutMinimum(settingsMinimum, of: window)
+        enforce(window, size: size, reason: "settings")
     }
 }
 
@@ -237,6 +298,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     // Leaving a translator goes back to the app the person came from, only
     // while Yullo is still in front and that app still runs; the selection's
+    static let settingsWindowSize = NSSize(width: 760, height: 620)
+    static let settingsWindowStyle: NSWindow.StyleMask = [
+        .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView
+    ]
+    // Settings, Welcome and the guide share this window.
+    func configureSettingsWindow(_ window: NSWindow) {
+        AppWindowSizing.configure(window, minimum: AppWindowSizing.settingsMinimum)
+        window.title = L10n.tr("Settings")
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+    }
     // own app first. A receipt arriving after they moved on changes nothing.
     private func focusReturnTarget(preferring preferred: pid_t? = nil) -> pid_t? {
         let own = ProcessInfo.processInfo.processIdentifier
@@ -290,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var settingsInitialAnchor: String?
     // Settings size to restore after the focused setup view; nil when unfocused.
     private var settingsSizeBeforeSetup: NSSize?
+    private var screenObserver: NSObjectProtocol?
     private var settingsInitialModelTask: ModelTask?
     private var activeGuidedTrialID: UUID?
     private enum SettingsReturnContext: Equatable {
@@ -379,6 +454,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         welcomeStartup = WelcomeStartupCoordinator(welcome: welcome)
         self.model = model
         super.init()
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.screensChanged() } }
         if welcome.isNewInstallation, let initialShortcutProfile {
             _ = model.adoptInitialShortcutProfile(initialShortcutProfile)
         }
@@ -593,15 +671,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         panel.roundContentCorners(26)
         panel.delegate = self
         settingsWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered,
-            defer: false)
-        AppWindowSizing.configure(settingsWindow, minimum: AppWindowSizing.settingsMinimum)
-        settingsWindow.title = L10n.tr("Settings")
-        settingsWindow.isReleasedWhenClosed = false
-        settingsWindow.delegate = self
-        settingsWindow.titleVisibility = .hidden
-        settingsWindow.titlebarAppearsTransparent = true
+            contentRect: NSRect(origin: .zero, size: Self.settingsWindowSize), styleMask: Self.settingsWindowStyle,
+            backing: .buffered, defer: false)
+        configureSettingsWindow(settingsWindow)
         settingsWindow.center()
         systemPromptReturn = SystemPromptReturn { [weak self] window in
             guard let self, self.terminationTask == nil,
@@ -1873,7 +1945,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if let visible = WindowPlacement.screen(near: nil, pointer: NSEvent.mouseLocation, screens: placementScreens)?
             .visibleFrame
         {
-            AppWindowSizing.fit(panel, in: visible)
+            AppWindowSizing.enforce(panel, in: visible, reason: "translator")
         }
         let origin = WindowPlacement.mainOrigin(
             size: panel.frame.size,
@@ -1986,7 +2058,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             captureSelection(refining: true)
             return
         }
-        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // The app in front, read as Edit with voice and Edit with text read it.
+        let front = frontmostPID
         guard front != ProcessInfo.processInfo.processIdentifier else {
             model.notice = L10n.tr("Select text in another app.")
             return
@@ -2280,7 +2353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // Each selection opens at the original size, then grows for its finished text.
         sidebar.setContentSize(AppWindowSizing.selectionSize)
         sidebar.growsToFitText = true
-        AppWindowSizing.fit(sidebar, in: visible)
+        AppWindowSizing.enforce(sidebar, in: visible, reason: "selection")
         sidebar.setFrameOrigin(selectionPanelOrigin(anchor: anchor, visible: visible, size: sidebar.frame.size))
         return present(sidebar)
     }
@@ -2702,6 +2775,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // smaller for long text, as tall as the screen allows, then scrolling.
         let shown = window.isVisible
         var frame: NSRect
+        // The screen the review is placed on, and kept within.
+        var bounds = visible
         if placed {
             // A typed request's result keeps its field's width, so the two line up.
             let laid = reader.applyLayout(screen: visible)
@@ -2716,9 +2791,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             // The guide's Sample card is the selection: the same rule as any text, under it
             // or above it, never over it, on the guide's screen.
             frame = reader.placement(in: screen, selection: voiceEditAnchor, end: nil, pointer: mouse)
+            bounds = screen
         } else {
             frame = reader.placement(in: visible, selection: selection, end: end, pointer: mouse)
         }
+        // Never past its screen, whatever the text asks for; the text scrolls beyond that.
+        frame = WindowPlacement.bounded(frame, minimum: .zero, in: bounds)
         window.contentMinSize = NSSize(width: reader.minimumContentWidth, height: frame.height)
         if placed, shown, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             // The window keeps its size, its new text not yet drawn, then eases to the text's
@@ -3085,9 +3163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             // Welcome's Set up Yullo opens straight into the focused guide.
             if opensGuide { focusSettingsOnSetup(true) }
         }
-        if let screen = settingsWindow.screen ?? NSScreen.main {
-            AppWindowSizing.fit(settingsWindow, in: screen.visibleFrame)
-        }
+        AppWindowSizing.enforce(settingsWindow, reason: "show")
         present(settingsWindow)
     }
     // A pending Welcome consumes only this opening. Starting setup never
@@ -3125,9 +3201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             inheritedAppearance: settingsWindow.effectiveAppearance)
         hosting.sizingOptions = []
         SettingsWindowSurface.install(hosting, in: settingsWindow)
-        if let screen = settingsWindow.screen ?? NSScreen.main {
-            AppWindowSizing.fit(settingsWindow, in: screen.visibleFrame)
-        }
+        AppWindowSizing.enforce(settingsWindow, reason: "show")
         if !present(settingsWindow, forWelcome: true) {
             welcomeStartup.cancelWelcome(id: welcomeID)
             discardSettingsContent()
@@ -3235,17 +3309,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     // The guide's focused view lives in the Settings window. Ending the guide,
     // or closing or replacing the content, returns the Settings size and title.
+    // Each mode change sets the layout's minimum and the frame together, then checks
+    // again once the layout has settled.
     private func focusSettingsOnSetup(_ focused: Bool) {
         guard let settingsWindow else { return }
-        let visible = (settingsWindow.screen ?? NSScreen.main)?.visibleFrame
         if focused {
-            let previous = AppWindowSizing.focusSetup(settingsWindow, in: visible)
-            if settingsSizeBeforeSetup == nil { settingsSizeBeforeSetup = previous }
+            if settingsSizeBeforeSetup == nil {
+                // Kept before the window changes: resizing lays out the content, which can
+                // report the guide again from inside this call.
+                settingsSizeBeforeSetup = settingsWindow.frame.size
+                AppWindowSizing.focusSetup(settingsWindow)
+            } else {
+                AppWindowSizing.enforce(settingsWindow, reason: "guide")
+            }
             settingsWindow.title = L10n.tr("Set Up Yullo")
         } else if let size = settingsSizeBeforeSetup {
             settingsSizeBeforeSetup = nil
-            AppWindowSizing.restoreSettings(settingsWindow, size: size, in: visible)
+            AppWindowSizing.restoreSettings(settingsWindow, size: size)
             settingsWindow.title = L10n.tr("Settings")
+        } else {
+            return
+        }
+        AppWindowSizing.recheckAfterLayout(settingsWindow, reason: focused ? "guide" : "settings")
+    }
+    // A display change, a new arrangement or another scale: each shown window keeps its bounds.
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        AppWindowSizing.enforce(window, reason: "screen change")
+    }
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        AppWindowSizing.enforce(window, reason: "scale change")
+    }
+    private func screensChanged() {
+        for window in [settingsWindow, panel, sidebar].compactMap({ $0 }) where window.isVisible {
+            AppWindowSizing.enforce(window, reason: "screens changed")
         }
     }
     private func discardSettingsContent() {

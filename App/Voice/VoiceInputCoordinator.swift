@@ -1856,6 +1856,8 @@ private final class VoiceStartupPCM: @unchecked Sendable {
         guard DeliveryFallback.copy(text) else { return keep(text, message: reason) }
         // A reason that names a fix stays below; "copy when ready" no longer applies.
         let explains = issue != .failed && (issue != .staleDestination || capturing)
+        // Secure input: one line, its reason and that the result is copied.
+        if issue == .secureInput { return keep(text, message: reason) }
         keep(
             text,
             message: explains
@@ -2341,6 +2343,7 @@ private final class VoiceStartupPCM: @unchecked Sendable {
         case .staleDestination, .none:
             return L10n.tr("To insert directly, click a text field before you start dictating.")
         case .failed: return L10n.tr("Direct insertion failed. Copy the result when ready.")
+        case .secureInput: return ReplacementNotice.secureInputCopied()
         }
     }
     private var modeLabel: String {

@@ -125,6 +125,7 @@
 "Also speaks more than 18 Chinese dialects." = "Also speaks more than 18 Chinese dialects.";
 "American English" = "American English";
 "Another app is keeping typing private, so Yullo can’t replace the text." = "Another app is keeping typing private, so Yullo can’t replace the text.";
+"Another app is keeping typing private. Result copied." = "Another app is keeping typing private. Result copied.";
 "Anywhere in text" = "Anywhere in text";
 "App" = "App";
 "App preferences" = "App preferences";
@@ -921,6 +922,8 @@
 "Refine in Yullo Window…" = "Refine in Yullo Window…";
 "Refine in Yullo window" = "Refine in Yullo window";
 "Refine in place" = "Refine in place";
+"Refine in place and Edit with voice now replace your text in more apps. When they can’t, they say why in a few words and copy the result for you." = "Refine in place and Edit with voice now replace your text in more apps. When they can’t, they say why in a few words and copy the result for you.";
+"Refine in place and Edit with voice replace your text in more apps, and the Settings window fits again after the guide." = "Refine in place and Edit with voice replace your text in more apps, and the Settings window fits again after the guide.";
 "Refine instead…" = "Refine instead…";
 "Refine selected text" = "Refine selected text";
 "Refine service" = "Refine service";
@@ -1034,6 +1037,7 @@
 "Search voices" = "Search voices";
 "Seconds" = "Seconds";
 "Secure Keyboard Entry is on in %@, so Yullo can’t replace the text." = "Secure Keyboard Entry is on in %@, so Yullo can’t replace the text.";
+"Secure Keyboard Entry is on in %@. Result copied." = "Secure Keyboard Entry is on in %@. Result copied.";
 "Select All" = "Select All";
 "Select text first, then say how to change it." = "Select text first, then say how to change it.";
 "Select text first." = "Select text first.";
@@ -1045,7 +1049,6 @@
 "Selected recognizer: %@" = "Selected recognizer: %@";
 "Selected text" = "Selected text";
 "Selected text in any app, PDFs and web pages." = "Selected text in any app, PDFs and web pages.";
-"Selection changed. Result copied." = "Selection changed. Result copied.";
 "Selection replaced" = "Selection replaced";
 "Send" = "Send";
 "Service URL" = "Service URL";
@@ -1061,6 +1064,7 @@
 "Set up without an API key" = "Set up without an API key";
 "Set up…" = "Set up…";
 "Settings" = "Settings";
+"Settings fits again" = "Settings fits again";
 "Settings · ⌘," = "Settings · ⌘,";
 "Settings…" = "Settings…";
 "Setup" = "Setup";
@@ -1190,8 +1194,10 @@
 "The CLI returned more data than a translation should contain." = "The CLI returned more data than a translation should contain.";
 "The CLI translation timed out. Try again or choose another connection." = "The CLI translation timed out. Try again or choose another connection.";
 "The CLI’s personal context couldn’t be isolated. Use another translation connection." = "The CLI’s personal context couldn’t be isolated. Use another translation connection.";
+"The Settings window keeps its size after the guide, so nothing is cut off at the sides." = "The Settings window keeps its size after the guide, so nothing is cut off at the sides.";
 "The access request was canceled." = "The access request was canceled.";
 "The app didn’t respond, so nothing was replaced." = "The app didn’t respond, so nothing was replaced.";
+"The app didn’t respond. Result copied." = "The app didn’t respond. Result copied.";
 "The downloaded model couldn’t be verified. Download it again." = "The downloaded model couldn’t be verified. Download it again.";
 "The edited text is too long. Try a shorter selection." = "The edited text is too long. Try a shorter selection.";
 "The edited text was cut off. Try a shorter selection." = "The edited text was cut off. Try a shorter selection.";
@@ -1223,6 +1229,7 @@
 "The saved voice isn’t in this list." = "The saved voice isn’t in this list.";
 "The selected text changed, so it can’t be replaced." = "The selected text changed, so it can’t be replaced.";
 "The selected text changed, so nothing was replaced." = "The selected text changed, so nothing was replaced.";
+"The selected text changed. Result copied." = "The selected text changed. Result copied.";
 "The selected text is too long to edit in one request." = "The selected text is too long to edit in one request.";
 "The server didn’t return a compatible Chat Completions response." = "The server didn’t return a compatible Chat Completions response.";
 "The service is temporarily unavailable (%ld). Try again later." = "The service is temporarily unavailable (%ld). Try again later.";
@@ -1271,7 +1278,7 @@
 "This term changed. Close the editor and try again." = "This term changed. Close the editor and try again.";
 "This text field doesn’t support direct insertion." = "This text field doesn’t support direct insertion.";
 "This text is read-only." = "This text is read-only.";
-"This text is read-only. Result copied: paste it with ⌘V." = "This text is read-only. Result copied: paste it with ⌘V.";
+"This text is read-only. Result copied." = "This text is read-only. Result copied.";
 "This text is too long for a CLI translation." = "This text is too long for a CLI translation.";
 "This text is too long for personal vocabulary processing." = "This text is too long for personal vocabulary processing.";
 "This text is too long for the local model. Try a shorter passage." = "This text is too long for the local model. Try a shorter passage.";
@@ -1421,6 +1428,7 @@
 "Window behavior…" = "Window behavior…";
 "Window style" = "Window style";
 "Work chat" = "Work chat";
+"Works in more apps" = "Works in more apps";
 "Works on this Mac and online" = "Works on this Mac and online";
 "Works on this Mac only" = "Works on this Mac only";
 "Write in %@" = "Write in %@";

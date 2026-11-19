@@ -125,6 +125,7 @@
 "Also speaks more than 18 Chinese dialects." = "还能说 18 种以上的汉语方言。";
 "American English" = "美式英语";
 "Another app is keeping typing private, so Yullo can’t replace the text." = "另一个 App 正在保护键盘输入，Yullo 无法替换这段文本。";
+"Another app is keeping typing private. Result copied." = "另一个 App 正在保护键盘输入。结果已拷贝。";
 "Anywhere in text" = "文中任意位置";
 "App" = "App";
 "App preferences" = "App 偏好";
@@ -921,6 +922,8 @@
 "Refine in Yullo Window…" = "在 Yullo 窗口中润色…";
 "Refine in Yullo window" = "在 Yullo 窗口中润色";
 "Refine in place" = "直接润色";
+"Refine in place and Edit with voice now replace your text in more apps. When they can’t, they say why in a few words and copy the result for you." = "“直接润色”和“语音编辑”现在可在更多 App 中替换你的文本。无法替换时，它们会简短说明原因，并为你复制结果。";
+"Refine in place and Edit with voice replace your text in more apps, and the Settings window fits again after the guide." = "“直接润色”和“语音编辑”现在可在更多 App 中替换文本，完成使用引导后，设置窗口也能完整显示。";
 "Refine instead…" = "改为润色…";
 "Refine selected text" = "润色选中文本";
 "Refine service" = "润色服务";
@@ -1034,6 +1037,7 @@
 "Search voices" = "搜索嗓音";
 "Seconds" = "秒";
 "Secure Keyboard Entry is on in %@, so Yullo can’t replace the text." = "%@ 开启了“安全键盘输入”，Yullo 无法替换这段文本。";
+"Secure Keyboard Entry is on in %@. Result copied." = "%@ 开启了“安全键盘输入”。结果已拷贝。";
 "Select All" = "全选";
 "Select text first, then say how to change it." = "请先选中文字，再说出修改指令。";
 "Select text first." = "请先选择文字。";
@@ -1045,7 +1049,6 @@
 "Selected recognizer: %@" = "识别模型：%@";
 "Selected text" = "选中文本";
 "Selected text in any app, PDFs and web pages." = "任意 App、PDF 和网页中选中的文本。";
-"Selection changed. Result copied." = "所选内容已变化，结果已拷贝。";
 "Selection replaced" = "已替换选区。";
 "Send" = "发送";
 "Service URL" = "服务地址";
@@ -1061,6 +1064,7 @@
 "Set up without an API key" = "无需 API 密钥即可设置";
 "Set up…" = "开始配置…";
 "Settings" = "设置";
+"Settings fits again" = "设置窗口不再被截断";
 "Settings · ⌘," = "设置 · ⌘,";
 "Settings…" = "设置…";
 "Setup" = "开始使用";
@@ -1190,8 +1194,10 @@
 "The CLI returned more data than a translation should contain." = "CLI 返回的数据超出了翻译结果的大小限制。";
 "The CLI translation timed out. Try again or choose another connection." = "CLI 翻译超时。请重试或选择其他连接。";
 "The CLI’s personal context couldn’t be isolated. Use another translation connection." = "无法隔离 CLI 中的个人上下文。请使用其他翻译连接。";
+"The Settings window keeps its size after the guide, so nothing is cut off at the sides." = "完成使用引导后，设置窗口会保持原来的大小，两侧不再被截断。";
 "The access request was canceled." = "访问请求已取消。";
 "The app didn’t respond, so nothing was replaced." = "该应用没有响应，未替换任何内容。";
+"The app didn’t respond. Result copied." = "该应用没有响应。结果已拷贝。";
 "The downloaded model couldn’t be verified. Download it again." = "模型文件未通过完整性校验，请重新下载。";
 "The edited text is too long. Try a shorter selection." = "修改结果过长，请选择较短的原文。";
 "The edited text was cut off. Try a shorter selection." = "修改结果被截断，请选择较短的原文。";
@@ -1223,6 +1229,7 @@
 "The saved voice isn’t in this list." = "已存储的嗓音不在加载的列表中。";
 "The selected text changed, so it can’t be replaced." = "所选文本已变化，无法替换。";
 "The selected text changed, so nothing was replaced." = "所选文本已变化，未替换任何内容。";
+"The selected text changed. Result copied." = "所选文本已变化。结果已拷贝。";
 "The selected text is too long to edit in one request." = "所选文字过长，请选择较短的段落。";
 "The server didn’t return a compatible Chat Completions response." = "服务器未返回兼容的 Chat Completions 响应。";
 "The service is temporarily unavailable (%ld). Try again later." = "服务暂时不可用（%ld）。请稍后重试。";
@@ -1271,7 +1278,7 @@
 "This term changed. Close the editor and try again." = "词条已变更。请关闭编辑窗口后重试。";
 "This text field doesn’t support direct insertion." = "此输入框不支持直接输入。";
 "This text is read-only." = "这段文本是只读的。";
-"This text is read-only. Result copied: paste it with ⌘V." = "这段文本是只读的。结果已拷贝：用 ⌘V 粘贴。";
+"This text is read-only. Result copied." = "这段文本是只读的。结果已拷贝。";
 "This text is too long for a CLI translation." = "此文本过长，无法通过 CLI 翻译。";
 "This text is too long for personal vocabulary processing." = "文本过长，无法应用个人词库。";
 "This text is too long for the local model. Try a shorter passage." = "此文本超出了本地模型的长度限制，请尝试较短的文本。";
@@ -1421,6 +1428,7 @@
 "Window behavior…" = "窗口设置…";
 "Window style" = "窗口样式";
 "Work chat" = "工作聊天";
+"Works in more apps" = "支持更多 App";
 "Works on this Mac and online" = "在这台 Mac 和在线运行";
 "Works on this Mac only" = "仅在这台 Mac 上运行";
 "Write in %@" = "用%@书写";

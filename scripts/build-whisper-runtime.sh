@@ -13,7 +13,7 @@ source scripts/metal-library.sh
 yullo_runtime_source_paths "$BUILD"
 mkdir -p "$PWD/.runtime-source" "$OUTPUT"
 if [ ! -d "$SOURCE/.git" ]; then
-    git clone --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp.git "$SOURCE"
+    git clone --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp.git "$SOURCE" || { echo "Couldn't download whisper.cpp from github.com. Check your internet connection, then run bash build.sh again." >&2; exit 1; }
 fi
 ACTUAL_REVISION="$(git -C "$SOURCE" rev-parse HEAD)"
 if [ "$ACTUAL_REVISION" != "$WHISPER_REVISION" ]; then

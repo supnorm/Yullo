@@ -116,7 +116,7 @@ Or in Terminal:
 curl -fsSL https://yullo.me/install.sh | sh
 ```
 
-The script downloads the latest release, checks it against its published SHA-256 and places Yullo in Applications. [Read it](https://github.com/supnorm/yullo.me/blob/main/install.sh) first if you like.
+The script downloads the latest release, checks it against its published SHA-256 and places Yullo in Applications. [Read it](docs/install.sh) first if you like.
 
 Prefer a disk image? Download `Yullo.dmg` from the [latest release](https://github.com/supnorm/Yullo/releases/latest) and drag Yullo into Applications. The first time you open it, macOS asks you to confirm: System Settings › Privacy & Security › Open Anyway.
 
@@ -126,13 +126,13 @@ Then open Yullo, and the welcome guide takes you through languages, permissions 
 
 ## Build from source
 
-You need Xcode 26 (selected with `xcode-select`), `git`, `cmake` and `python3`.
+You need a Mac with Apple silicon and macOS 26, [Xcode 26](https://apps.apple.com/app/xcode/id497799835) and `cmake` (for example `brew install cmake`).
 
 ```sh
-git clone https://github.com/supnorm/Yullo.git
-cd Yullo
+git clone https://github.com/supnorm/Yullo.git ~/Yullo
+cd ~/Yullo
 
-# First time only: create a local code-signing identity
+# First time only: create a local code-signing certificate in your keychain
 # (or use your own certificate: --identity <40-character SHA-1>)
 python3 scripts/setup-signing.py --create
 
@@ -143,7 +143,11 @@ bash build.sh
 python3 scripts/install-update.py --destination /Applications/Yullo.app
 ```
 
-The first build fetches the pinned sources of the bundled runtimes and checks them, so it needs a network connection and takes a while. Keep the folder in a short path, such as `~/Yullo`, since the speech runtime limits path length. A build never downloads models.
+`bash build.sh` first checks this Mac and prints each problem with the command that fixes it, such as a missing Xcode license, Metal toolchain or `cmake`. To run only that check: `python3 scripts/doctor.py`.
+
+The first build fetches the pinned sources of the bundled runtimes and checks them, so it needs a network connection, about 5 GB of free space and a while. Keep the folder in a short path, such as `~/Yullo`, since the speech runtime limits path length. A build never downloads models.
+
+If you already installed Yullo from yullo.me, the last step tells you what changes before it replaces that copy: macOS asks again for Yullo's permissions, and update checks inside Yullo keep offering the release. To go back to the release, run the install command above.
 
 <details>
 <summary><b>Inside the repository</b></summary>

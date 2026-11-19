@@ -1,11 +1,17 @@
 #!/bin/bash
+# Started as `sh build.sh` or `zsh build.sh`: run again with bash, which the build needs.
+if [ -z "${BASH_VERSION:-}" ] || case ":${SHELLOPTS:-}:" in *:posix:*) true ;; *) false ;; esac; then
+    if [ -z "${YULLO_BUILD_REEXEC:-}" ]; then
+        YULLO_BUILD_REEXEC=1 exec /bin/bash "$0" "$@"
+    fi
+fi
 set -euo pipefail
 if [ "$#" -gt 0 ]; then
     if [ "$#" -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
         cat <<'USAGE'
 Usage: bash build.sh
 Build, sign and audit build/Yullo.app without installing it.
-YULLO_VERSION (default 1.0.2) and YULLO_BUILD (default 3) set a release's
+YULLO_VERSION (default 1.0.3) and YULLO_BUILD (default 4) set a release's
 CFBundleShortVersionString and CFBundleVersion; each release raises both.
 USAGE
         exit 0
@@ -14,10 +20,15 @@ USAGE
     exit 2
 fi
 cd "$(dirname "$0")"
-# Reject missing/unavailable local identity before downloading or compiling.
-python3 scripts/setup-signing.py --check
-YULLO_VERSION="${YULLO_VERSION:-1.0.2}"
-YULLO_BUILD="${YULLO_BUILD:-3}"
+# Check Xcode, tools, folder, disk, network and signing before downloading or
+# compiling, and print each problem with its fix. python3 itself needs Xcode.
+if ! xcode-select -p >/dev/null 2>&1; then
+    echo "Xcode isn't set up. Install Xcode 26 from the App Store, then run: sudo xcode-select --switch /Applications/Xcode.app" >&2
+    exit 1
+fi
+python3 scripts/doctor.py --quiet
+YULLO_VERSION="${YULLO_VERSION:-1.0.3}"
+YULLO_BUILD="${YULLO_BUILD:-4}"
 if ! [[ "$YULLO_VERSION" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){1,2}$ && "$YULLO_BUILD" =~ ^[1-9][0-9]*$ ]]; then
     echo "YULLO_VERSION must look like 1.1 or 1.0.1 and YULLO_BUILD must be a positive whole number." >&2
     exit 2
@@ -127,20 +138,39 @@ PLIST
 # Keep this identity stable: Keychain grants follow the designated requirement.
 # Never silently fall back to ad-hoc signing if the identity is unavailable.
 SIGNING_IDENTITY="$(cat signing-identity.txt)"
+# A keychain that locked during the build (sleep, screen lock) would make codesign
+# wait on a password window. Unlock a chosen keychain whose password was given,
+# then stop with the unlock command instead of letting macOS ask.
+if [ -n "${YULLO_KEYCHAIN:-}" ] && [ -n "${YULLO_KEYCHAIN_PASSWORD:-}" ]; then
+    security unlock-keychain -p "$YULLO_KEYCHAIN_PASSWORD" "$YULLO_KEYCHAIN"
+fi
+python3 scripts/setup-signing.py --check >/dev/null
+# YULLO_KEYCHAIN names the keychain that setup-signing.py put the identity in.
+SIGNING_KEYCHAIN=()
+if [ -n "${YULLO_KEYCHAIN:-}" ]; then SIGNING_KEYCHAIN=(--keychain "$YULLO_KEYCHAIN"); fi
+sign() {
+    if ! codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none ${SIGNING_KEYCHAIN[@]+"${SIGNING_KEYCHAIN[@]}"} "$@" 2>"$TASK_STAGE/codesign.log"; then
+        cat "$TASK_STAGE/codesign.log" >&2
+        if grep -qE "errSecInternalComponent|User interaction is not allowed|User canceled" "$TASK_STAGE/codesign.log"; then
+            echo "macOS didn't let codesign use your signing key. Run bash build.sh again, and if a keychain window asks, enter your Mac login password and choose Always Allow. If your keychain is locked (for example over SSH), first run: security unlock-keychain ~/Library/Keychains/login.keychain-db" >&2
+        fi
+        exit 1
+    fi
+}
 # Sign nested code inside out: extra executables, then each helper bundle,
 # which seals its Metal kernels and signs its main executable.
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none --identifier "local.yullo.whisper" "$RECOGNITION/Contents/MacOS/yullo-whisper"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none --identifier "local.yullo.live-transcribe" "$RECOGNITION/Contents/MacOS/yullo-live-transcribe"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$RECOGNITION"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$TRANSLATION"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none --identifier "local.yullo.speech" "$APP/Contents/Helpers/yullo-speech"
+sign --identifier "local.yullo.whisper" "$RECOGNITION/Contents/MacOS/yullo-whisper"
+sign --identifier "local.yullo.live-transcribe" "$RECOGNITION/Contents/MacOS/yullo-live-transcribe"
+sign "$RECOGNITION"
+sign "$TRANSLATION"
+sign --identifier "local.yullo.speech" "$APP/Contents/Helpers/yullo-speech"
 # Sparkle's nested code, inside out, then the framework itself.
 SPARKLE_CODE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 for code in XPCServices/Installer.xpc XPCServices/Downloader.xpc Autoupdate Updater.app; do
-    codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none --preserve-metadata=identifier,entitlements "$SPARKLE_CODE/$code"
+    sign --preserve-metadata=identifier,entitlements "$SPARKLE_CODE/$code"
 done
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework"
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none --requirements "=designated => identifier \"me.yullo.app\" and certificate leaf = H\"$SIGNING_IDENTITY\"" "$APP"
+sign "$APP/Contents/Frameworks/Sparkle.framework"
+sign --requirements "=designated => identifier \"me.yullo.app\" and certificate leaf = H\"$SIGNING_IDENTITY\"" "$APP"
 python3 scripts/check-release.py "$APP"
 # Publish only a fully verified, freshly assembled bundle. Never overlay an old
 # build: otherwise removed resources or accidental fixtures could remain inside.

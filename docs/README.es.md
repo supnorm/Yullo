@@ -116,7 +116,7 @@ O en Terminal:
 curl -fsSL https://yullo.me/install.sh | sh
 ```
 
-El script descarga la última versión, la comprueba con su SHA-256 publicado y coloca Yullo en Aplicaciones. [Léelo](https://github.com/supnorm/yullo.me/blob/main/install.sh) antes si quieres.
+El script descarga la última versión, la comprueba con su SHA-256 publicado y coloca Yullo en Aplicaciones. [Léelo](install.sh) antes si quieres.
 
 ¿Prefieres una imagen de disco? Descarga `Yullo.dmg` de la [última versión](https://github.com/supnorm/Yullo/releases/latest) y arrastra Yullo a Aplicaciones. La primera vez que lo abras, macOS te pedirá que confirmes: Ajustes del Sistema › Privacidad y seguridad › Abrir igualmente.
 
@@ -128,13 +128,13 @@ Después abre Yullo, y la guía de bienvenida te acompaña con los idiomas, los 
 
 ## Compilar desde el código
 
-Necesitas Xcode 26 (seleccionado con `xcode-select`), `git`, `cmake` y `python3`.
+Necesitas un Mac con chip de Apple y macOS 26, [Xcode 26](https://apps.apple.com/app/xcode/id497799835) y `cmake` (por ejemplo `brew install cmake`).
 
 ```sh
-git clone https://github.com/supnorm/Yullo.git
-cd Yullo
+git clone https://github.com/supnorm/Yullo.git ~/Yullo
+cd ~/Yullo
 
-# Solo la primera vez: crear una identidad de firma local
+# Solo la primera vez: crear un certificado de firma local en tu llavero
 # (o usar tu propio certificado: --identity <SHA-1 de 40 caracteres>)
 python3 scripts/setup-signing.py --create
 
@@ -145,7 +145,11 @@ bash build.sh
 python3 scripts/install-update.py --destination /Applications/Yullo.app
 ```
 
-La primera compilación descarga y comprueba las fuentes con versiones fijas de los motores incluidos, así que necesita conexión y tarda un rato. Guarda la carpeta en una ruta corta, como `~/Yullo`, porque el motor de voz limita la longitud de las rutas. Una compilación nunca descarga modelos.
+`bash build.sh` primero revisa este Mac y muestra cada problema con el comando que lo resuelve, como la licencia de Xcode sin aceptar, la cadena de herramientas de Metal o `cmake` que falten. Para hacer solo la revisión: `python3 scripts/doctor.py`.
+
+La primera compilación descarga y comprueba las fuentes con versiones fijas de los motores incluidos, así que necesita conexión, unos 5 GB libres y tarda un rato. Guarda la carpeta en una ruta corta, como `~/Yullo`, porque el motor de voz limita la longitud de las rutas. Una compilación nunca descarga modelos.
+
+Si ya instalaste Yullo desde yullo.me, el último paso te dice qué cambia antes de sustituir esa copia: macOS vuelve a pedir los permisos de Yullo, y la búsqueda de actualizaciones de Yullo sigue ofreciendo la versión publicada. Para volver a la versión publicada, usa el comando de instalación de arriba.
 
 <details>
 <summary><b>El repositorio de un vistazo</b></summary>

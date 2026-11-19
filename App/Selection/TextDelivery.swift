@@ -106,7 +106,11 @@ enum TextDelivery {
     // Public insertion failures other than uncertain are known not to have
     // changed the document. A write without a confirmed result must be
     // reported as uncertain, including errors while reading its receipt.
-    enum Issue: Error, Equatable { case permission, unsupported, staleDestination, failed, uncertain }
+    enum Issue: Error, Equatable {
+        case permission, unsupported, staleDestination, failed, uncertain
+        // Secure input is on: a posted Command-V would be swallowed, so nothing is posted.
+        case secureInput
+    }
     private static let worker = DispatchQueue(label: "yullo.voice-text-delivery", qos: .userInitiated)
     private static let session = TextDeliverySession(backend: AXTextDeliveryBackend())
 
@@ -1406,22 +1410,17 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
         let line = TerminalDelivery.singleLine(text)
         guard !line.isEmpty, let before = terminalText(element) else { throw TextDelivery.Issue.unsupported }
         let baseline = TerminalDelivery.occurrences(of: line, in: before)
+        guard !CommandKeyPost.secureInput else { throw TextDelivery.Issue.secureInput }
+        CommandKeyPost.awaitPlainKeys()
         let lease = try TextDeliveryClipboardLease(clipboard: SystemDeliveryClipboard(), text: line)
         var posted = false
         defer { if !posted { try? lease.restoreIfOwned() } }
-        let key = CommandKeyCodes.paste
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-        else { throw TextDelivery.Issue.failed }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
         try lease.performIfOwned(validating: {
             guard self.matches(try self.focusedElement(), element) else { throw TextDelivery.Issue.staleDestination }
         }) {
-            down.postToPid(expected.processID)
-            up.postToPid(expected.processID)
-            posted = true
+            posted = CommandKeyPost.post(CommandKeyCodes.paste, to: expected.processID)
         }
+        guard posted else { throw CommandKeyPost.secureInput ? TextDelivery.Issue.secureInput : .failed }
         let deadline = ProcessInfo.processInfo.systemUptime + 1.5
         while ProcessInfo.processInfo.systemUptime < deadline {
             if let after = terminalText(element), TerminalDelivery.occurrences(of: line, in: after) > baseline {
@@ -1438,6 +1437,9 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
         acknowledgement: TextDeliveryAcknowledgement
     ) throws {
         guard expected.supportsPaste else { throw TextDelivery.Issue.unsupported }
+        guard !CommandKeyPost.secureInput else { throw TextDelivery.Issue.secureInput }
+        // A key still held from the shortcut would turn Command-V into another command.
+        CommandKeyPost.awaitPlainKeys()
         let lease = try TextDeliveryClipboardLease(clipboard: SystemDeliveryClipboard(), text: text)
         var posted = false
         defer { if !posted { try? lease.restoreIfOwned() } }
@@ -1446,20 +1448,14 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
             throw TextDelivery.Issue.staleDestination
         }
         let key = CommandKeyCodes.paste
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-        else { throw TextDelivery.Issue.failed }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
         try lease.performIfOwned(validating: {
             // State reads can take several AX round trips. Verify the current
             // focused handle again after them, then check clipboard ownership.
             guard self.matches(try self.focusedElement(), element) else { throw TextDelivery.Issue.staleDestination }
         }) {
-            down.postToPid(expected.processID)
-            up.postToPid(expected.processID)
-            posted = true
+            posted = CommandKeyPost.post(key, to: expected.processID)
         }
+        guard posted else { throw CommandKeyPost.secureInput ? TextDelivery.Issue.secureInput : .failed }
         // A queued paste may still be consumed. Keep its text on the clipboard
         // on failure rather than restore an unrelated private original before
         // it is consumed.
@@ -1474,8 +1470,7 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
             try lease.performIfOwned(validating: {
                 guard self.matches(try self.focusedElement(), element) else { throw TextDelivery.Issue.uncertain }
             }) {
-                down.postToPid(expected.processID)
-                up.postToPid(expected.processID)
+                _ = CommandKeyPost.post(key, to: expected.processID)
             }
             textDeliveryLogger.notice("Delivery paste repeated after an unchanged field")
             try acknowledge(acknowledgement, element: element)
@@ -1493,6 +1488,56 @@ final class AXTextDeliveryBackend: TextDeliveryBackend {
         guard unchanged() else { return false }
         Thread.sleep(forTimeInterval: 0.5)  // AX worker only.
         return unchanged()
+    }
+}
+
+// Every Command-C and Command-V Yullo posts, from capture, Replace, Refine in place,
+// Edit with voice or text, the translator and dictation, goes through here: only to
+// the app named, never while secure input would swallow it, and only once the
+// shortcut that started the action has let go of its modifiers (bounded), so the
+// app sees plain Command-C or Command-V and not Control-Shift-Command-V. AX workers only.
+enum CommandKeyPost {
+    struct System {
+        var heldFlags: () -> CGEventFlags
+        var secureInput: () -> Bool
+        var post: (CGKeyCode, Int32) -> Bool
+        var now: () -> TimeInterval
+        var pause: (TimeInterval) -> Void
+        static let live = System(
+            heldFlags: { CGEventSource.flagsState(.combinedSessionState) },
+            secureInput: { IsSecureEventInputEnabled() },
+            post: { key, processID in
+                guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
+                    let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+                else { return false }
+                down.flags = .maskCommand
+                up.flags = .maskCommand
+                down.postToPid(processID)
+                up.postToPid(processID)
+                return true
+            },
+            now: { ProcessInfo.processInfo.systemUptime },
+            pause: { Thread.sleep(forTimeInterval: $0) })
+    }
+    nonisolated(unsafe) static var system = System.live
+    static let modifiers: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
+    static let releaseWait: TimeInterval = 0.5
+    // Waits, at most `releaseWait`, for the shortcut's modifiers to come up. True once they have.
+    @discardableResult static func awaitPlainKeys(system: System = system) -> Bool {
+        let deadline = system.now() + releaseWait
+        while !system.heldFlags().intersection(modifiers).isEmpty {
+            guard system.now() < deadline else { return false }
+            system.pause(0.02)
+        }
+        return true
+    }
+    static var secureInput: Bool { system.secureInput() }
+    // Posts Command and the key to that app only. False, with nothing posted, under secure input.
+    static func post(_ key: CGKeyCode, to processID: Int32, system: System = system) -> Bool {
+        guard processID > 0, processID != ProcessInfo.processInfo.processIdentifier, !system.secureInput() else {
+            return false
+        }
+        return system.post(key, processID)
     }
 }
 

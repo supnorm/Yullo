@@ -4,6 +4,8 @@ import ctypes
 import argparse
 import os
 import plistlib
+import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -177,7 +179,47 @@ def installation_destination(requested=None, *, home=None, system=None):
 
 
 def signing_identity(project):
-    return (project / "signing-identity.txt").read_text().strip()
+    path = project / "signing-identity.txt"
+    if not path.is_file():
+        raise InstallStop("Signing isn't set up in this folder yet. Run: python3 scripts/setup-signing.py --create, then bash build.sh")
+    return path.read_text().strip()
+
+
+def built_app(project):
+    path = project / "build/Yullo.app"
+    if not path.is_dir():
+        raise InstallStop("There's no build to install yet. Run: bash build.sh")
+    return path
+
+
+class InstallStop(RuntimeError):
+    """A plain message for the person installing; no traceback."""
+
+
+RETURN_TO_RELEASE = "curl -fsSL https://yullo.me/install.sh | sh"
+
+
+def other_build_message(destination, command):
+    return "\n".join([
+        f"{destination} is signed by a different certificate, most likely the release from yullo.me.",
+        "Installing your own build replaces it. After that:",
+        "  - macOS asks again for Microphone, Accessibility and Yullo's other permissions.",
+        "    If Yullo already shows as allowed but doesn't work, reset its entries and allow them again:",
+        "    tccutil reset All me.yullo.app",
+        "  - API keys you saved stay in your keychain; macOS asks once before your build can use them.",
+        "  - Update checks inside Yullo offer the release from yullo.me, not your build.",
+        "    To update your build, run git pull and bash build.sh, then install again.",
+        f"  - To go back to the release at any time: {RETURN_TO_RELEASE}",
+        "To replace it with your build, run:",
+        f"  {command}",
+    ])
+
+
+def signer(bundle):
+    """The leaf certificate's SHA-1 of a signed bundle, or None."""
+    result = subprocess.run(["codesign", "-d", "-r-", str(bundle)], capture_output=True, text=True)
+    found = re.search(r'certificate leaf = H"([0-9a-fA-F]{40})"', result.stdout + result.stderr)
+    return found.group(1).upper() if found else None
 
 
 def main(argv=None):
@@ -185,11 +227,22 @@ def main(argv=None):
     parser.add_argument("--destination", metavar="APP_PATH", help="absolute Yullo.app path; defaults to the existing Applications installation")
     parser.add_argument("--previous-identity", metavar="SHA1",
                         help="also replace an installation signed by this earlier identity (a certificate change)")
+    parser.add_argument("--replace-other-build", action="store_true",
+                        help="replace a Yullo signed by another certificate, such as the release from yullo.me")
     arguments = parser.parse_args(argv)
+    try:
+        return install(arguments, argv)
+    except InstallStop as stop:
+        print(stop, file=sys.stderr)
+        return 1
+
+
+def install(arguments, argv):
     project = Path(__file__).resolve().parents[1]
     identity = signing_identity(project)
     if len(identity) != 40 or any(char not in "0123456789abcdefABCDEF" for char in identity):
         raise RuntimeError("Invalid signing identity fingerprint")
+    source = built_app(project)
     # Yullo moved from local.yullo.app to me.yullo.app; an installed copy
     # under either identifier, signed by this identity, may be replaced.
     owned_identifiers = ("me.yullo.app", "local.yullo.app")
@@ -199,22 +252,52 @@ def main(argv=None):
         if len(previous) != 40 or any(char not in "0123456789abcdefABCDEF" for char in previous):
             raise RuntimeError("Invalid previous signing identity fingerprint")
         accepted.append(previous)
+    replaced_other = []
 
     def verify_owned(bundle):
         with (bundle / "Contents/Info.plist").open("rb") as source:
             info = plistlib.load(source)
         identifier = info.get("CFBundleIdentifier")
         if identifier not in owned_identifiers:
-            raise RuntimeError(f"Refusing to replace an unrelated app: {bundle}")
+            raise InstallStop(f"{bundle} isn't Yullo, so it was left as it is. Choose another --destination.")
         leaves = " or ".join(f'certificate leaf = H"{value}"' for value in accepted)
         requirement = f'=identifier "{identifier}" and ({leaves})'
-        subprocess.run(["codesign", "--verify", "--strict", "--test-requirement", requirement, str(bundle)], check=True)
+        ours = subprocess.run(["codesign", "--verify", "--strict", "--test-requirement", requirement, str(bundle)],
+                              capture_output=True, text=True)
+        if ours.returncode == 0:
+            return
+        # Signed as Yullo, but by another certificate: the release, or a build made
+        # with another identity. Replace it only when asked, after saying what changes.
+        intact = subprocess.run(["codesign", "--verify", "--strict", "--test-requirement",
+                                 f'=identifier "{identifier}"', str(bundle)], capture_output=True, text=True)
+        if intact.returncode != 0:
+            raise InstallStop(f"{bundle} is damaged or not properly signed, so it was left as it is. "
+                              "Move it to the Trash, then install again.")
+        if not arguments.replace_other_build:
+            given = list(sys.argv[1:] if argv is None else argv)
+            command = " ".join(["python3", "scripts/install-update.py"] + [shlex.quote(item) for item in given]
+                               + ["--replace-other-build"])
+            raise InstallStop(other_build_message(bundle, command))
+        if not replaced_other:
+            replaced_other.append(signer(bundle))
 
     def verify_release(bundle):
         subprocess.run([sys.executable, str(project / "scripts/check-release.py"), str(bundle)], check=True)
 
-    destination = installation_destination(arguments.destination)
-    backup = publish(project / "build/Yullo.app", destination, verify_release, verify_owned, stop_exact_executable)
+    try:
+        destination = installation_destination(arguments.destination)
+    except ValueError as error:
+        raise InstallStop(f"{error}, for example /Applications/Yullo.app.") from None
+    parent = destination.parent
+    while not parent.exists() and parent != parent.parent:
+        parent = parent.parent
+    if not os.access(parent, os.W_OK) or (destination.exists() and not os.access(destination.parent, os.W_OK)):
+        raise InstallStop(f"You can't write to {destination.parent}. Sign in as an administrator, "
+                          "or install into your own Applications folder: "
+                          "python3 scripts/install-update.py --destination ~/Applications/Yullo.app")
+    if destination.exists() and not destination.is_symlink():
+        verify_owned(destination)  # Explain a replacement before copying or auditing anything.
+    backup = publish(source, destination, verify_release, verify_owned, stop_exact_executable)
     try:
         register_application(destination)
     except (OSError, subprocess.SubprocessError) as error:
@@ -226,6 +309,9 @@ def main(argv=None):
     print(f"Installed Yullo: {destination}")
     if backup is not None:
         print(f"Previous app retained for recovery: {backup}")
+    if replaced_other:
+        print("Open Yullo and allow its permissions again when asked. If one stays off: tccutil reset All me.yullo.app")
+        print(f"To go back to the release: {RETURN_TO_RELEASE}")
     return 0
 
 

@@ -16,7 +16,7 @@ fi
 if ! git -C "$LLAMA_SOURCE" rev-parse --verify HEAD >/dev/null 2>&1; then
     # A first run interrupted before checkout left no remote or no HEAD; set both again.
     git -C "$LLAMA_SOURCE" remote add origin https://github.com/ggml-org/llama.cpp.git 2>/dev/null || git -C "$LLAMA_SOURCE" remote set-url origin https://github.com/ggml-org/llama.cpp.git
-    git -C "$LLAMA_SOURCE" fetch --depth 1 origin "$LLAMA_REVISION"
+    git -C "$LLAMA_SOURCE" fetch --depth 1 origin "$LLAMA_REVISION" || { echo "Couldn't download llama.cpp from github.com. Check your internet connection, then run bash build.sh again." >&2; exit 1; }
     git -C "$LLAMA_SOURCE" checkout --detach FETCH_HEAD
 fi
 if [ "$(git -C "$LLAMA_SOURCE" rev-parse HEAD)" != "$LLAMA_REVISION" ] ||

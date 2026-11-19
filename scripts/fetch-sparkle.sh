@@ -11,9 +11,12 @@ if [ ! -f "$SOURCE/.verified" ]; then
     STAGE="$(mktemp -d "$PWD/.runtime-source/.sparkle.XXXXXX")"
     trap 'rm -rf "$STAGE"' EXIT
     curl -fsSL -o "$STAGE/Sparkle.tar.xz" \
-        "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+        "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" || {
+        echo "Couldn't download Sparkle from github.com. Check your internet connection, then run bash build.sh again." >&2
+        exit 1
+    }
     if [ "$(shasum -a 256 "$STAGE/Sparkle.tar.xz" | cut -d ' ' -f 1)" != "$SPARKLE_SHA256" ]; then
-        echo "Sparkle download does not match the pinned checksum." >&2
+        echo "The Sparkle download doesn't match its pinned checksum, so it wasn't used. A proxy or captive portal can change downloads; check your connection, then run bash build.sh again." >&2
         exit 1
     fi
     mkdir "$STAGE/Sparkle"

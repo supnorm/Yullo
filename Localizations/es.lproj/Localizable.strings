@@ -125,6 +125,7 @@
 "Also speaks more than 18 Chinese dialects." = "También habla más de 18 dialectos chinos.";
 "American English" = "Inglés estadounidense";
 "Another app is keeping typing private, so Yullo can’t replace the text." = "Otra app está protegiendo lo que escribes, así que Yullo no puede reemplazar el texto.";
+"Another app is keeping typing private. Result copied." = "Otra app está protegiendo lo que escribes. Resultado copiado.";
 "Anywhere in text" = "En cualquier parte del texto";
 "App" = "App";
 "App preferences" = "Preferencias por app";
@@ -921,6 +922,8 @@
 "Refine in Yullo Window…" = "Mejorar en la ventana de Yullo…";
 "Refine in Yullo window" = "Mejorar en la ventana de Yullo";
 "Refine in place" = "Mejorar en la app";
+"Refine in place and Edit with voice now replace your text in more apps. When they can’t, they say why in a few words and copy the result for you." = "Mejorar en la app y Editar con la voz ahora reemplazan tu texto en más apps. Cuando no pueden, te dicen por qué en pocas palabras y copian el resultado por ti.";
+"Refine in place and Edit with voice replace your text in more apps, and the Settings window fits again after the guide." = "Mejorar en la app y Editar con la voz reemplazan tu texto en más apps, y la ventana Ajustes vuelve a caber después de la guía.";
 "Refine instead…" = "Mejorar en su lugar…";
 "Refine selected text" = "Mejorar el texto seleccionado";
 "Refine service" = "Servicio para mejorar";
@@ -1034,6 +1037,7 @@
 "Search voices" = "Buscar voces";
 "Seconds" = "Segundos";
 "Secure Keyboard Entry is on in %@, so Yullo can’t replace the text." = "La entrada segura de teclado está activada en %@, así que Yullo no puede reemplazar el texto.";
+"Secure Keyboard Entry is on in %@. Result copied." = "La entrada segura de teclado está activada en %@. Resultado copiado.";
 "Select All" = "Seleccionar todo";
 "Select text first, then say how to change it." = "Selecciona texto antes de dictar una instrucción de edición.";
 "Select text first." = "Selecciona primero el texto.";
@@ -1045,7 +1049,6 @@
 "Selected recognizer: %@" = "Modelo seleccionado: %@";
 "Selected text" = "Texto seleccionado";
 "Selected text in any app, PDFs and web pages." = "Texto seleccionado en cualquier app, PDF y páginas web.";
-"Selection changed. Result copied." = "La selección ha cambiado. Se ha copiado el resultado.";
 "Selection replaced" = "Selección reemplazada.";
 "Send" = "Enviar";
 "Service URL" = "URL del servicio";
@@ -1061,6 +1064,7 @@
 "Set up without an API key" = "Configura sin clave API";
 "Set up…" = "Configurar…";
 "Settings" = "Ajustes";
+"Settings fits again" = "Ajustes vuelve a caber";
 "Settings · ⌘," = "Ajustes · ⌘,";
 "Settings…" = "Ajustes…";
 "Setup" = "Primeros pasos";
@@ -1190,8 +1194,10 @@
 "The CLI returned more data than a translation should contain." = "La CLI ha devuelto más datos del límite previsto para una traducción.";
 "The CLI translation timed out. Try again or choose another connection." = "La traducción con la CLI ha agotado el tiempo de espera. Inténtalo de nuevo o elige otra conexión.";
 "The CLI’s personal context couldn’t be isolated. Use another translation connection." = "No se ha podido aislar el contexto personal de la CLI. Usa otra conexión de traducción.";
+"The Settings window keeps its size after the guide, so nothing is cut off at the sides." = "La ventana Ajustes conserva su tamaño después de la guía, así que nada se corta a los lados.";
 "The access request was canceled." = "Se ha cancelado la solicitud de acceso.";
 "The app didn’t respond, so nothing was replaced." = "La app no ha respondido, así que no se ha reemplazado nada.";
+"The app didn’t respond. Result copied." = "La app no respondió. Resultado copiado.";
 "The downloaded model couldn’t be verified. Download it again." = "El archivo del modelo no ha superado la comprobación de integridad. Vuelve a descargarlo.";
 "The edited text is too long. Try a shorter selection." = "El texto editado es demasiado largo. Selecciona un original más corto.";
 "The edited text was cut off. Try a shorter selection." = "El texto editado se ha cortado. Selecciona un original más corto.";
@@ -1223,6 +1229,7 @@
 "The saved voice isn’t in this list." = "La voz guardada no está en la lista cargada.";
 "The selected text changed, so it can’t be replaced." = "El texto seleccionado ha cambiado, así que no se puede reemplazar.";
 "The selected text changed, so nothing was replaced." = "El texto seleccionado ha cambiado, así que no se ha reemplazado nada.";
+"The selected text changed. Result copied." = "El texto seleccionado ha cambiado. Resultado copiado.";
 "The selected text is too long to edit in one request." = "El texto seleccionado es demasiado largo. Selecciona un fragmento más corto.";
 "The server didn’t return a compatible Chat Completions response." = "El servidor no ha devuelto una respuesta compatible con Chat Completions.";
 "The service is temporarily unavailable (%ld). Try again later." = "El servicio no está disponible en este momento (%ld). Inténtalo de nuevo más tarde.";
@@ -1271,7 +1278,7 @@
 "This term changed. Close the editor and try again." = "Este término ha cambiado. Cierra el editor y vuelve a intentarlo.";
 "This text field doesn’t support direct insertion." = "Este campo no permite la inserción directa.";
 "This text is read-only." = "Este texto es de solo lectura.";
-"This text is read-only. Result copied: paste it with ⌘V." = "Este texto es de solo lectura. Resultado copiado: pégalo con ⌘V.";
+"This text is read-only. Result copied." = "Este texto es de solo lectura. Resultado copiado.";
 "This text is too long for a CLI translation." = "Este texto es demasiado largo para traducirlo con la CLI.";
 "This text is too long for personal vocabulary processing." = "El texto es demasiado largo para aplicar el vocabulario personal.";
 "This text is too long for the local model. Try a shorter passage." = "El texto es demasiado largo para el modelo local. Prueba con uno más corto.";
@@ -1421,6 +1428,7 @@
 "Window behavior…" = "Comportamiento de las ventanas…";
 "Window style" = "Estilo de ventana";
 "Work chat" = "Chat de trabajo";
+"Works in more apps" = "Funciona en más apps";
 "Works on this Mac and online" = "Funciona en este Mac y en línea";
 "Works on this Mac only" = "Funciona solo en este Mac";
 "Write in %@" = "Escribir en %@";

@@ -12,6 +12,26 @@ enum WindowPlacement {
         frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
         visibleFrame: CGRect(x: 0, y: 0, width: 1440, height: 900))
 
+    // The frame a window takes: the size asked for (or its own), at least the minimum and at
+    // most the screen. A changed size keeps the top edge and the centre; the window moves only
+    // to stay on its screen. On a screen smaller than the minimum the screen wins.
+    static func bounded(_ frame: CGRect, size: CGSize? = nil, minimum: CGSize, in visible: CGRect?) -> CGRect {
+        var size = size ?? frame.size
+        size.width = max(size.width, minimum.width)
+        size.height = max(size.height, minimum.height)
+        let screen = visible.flatMap { $0.width > 0 && $0.height > 0 ? $0 : nil }
+        if let screen {
+            size.width = min(size.width, screen.width)
+            size.height = min(size.height, screen.height)
+        }
+        var result = CGRect(
+            x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height)
+        if let screen {
+            result.origin.x = min(max(result.minX, screen.minX), screen.maxX - result.width)
+            result.origin.y = min(max(result.minY, screen.minY), screen.maxY - result.height)
+        }
+        return result
+    }
     static func screen(near anchor: CGRect?, pointer: CGPoint, screens: [PlacementScreen]) -> PlacementScreen? {
         var best: PlacementScreen?
         var largestArea: CGFloat = 0

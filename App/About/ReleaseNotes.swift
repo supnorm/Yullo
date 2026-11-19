@@ -24,6 +24,23 @@ enum ReleaseNotes {
     }
     static let entries: [Entry] = [
         .init(
+            version: "1.0.3", build: "4", isPreview: false,
+            titleKey: "What’s new",
+            leadKey:
+                "Refine in place and Edit with voice replace your text in more apps, and the Settings window fits again after the guide.",
+            features: [
+                .init(
+                    titleKey: "Works in more apps",
+                    detailKey:
+                        "Refine in place and Edit with voice now replace your text in more apps. When they can’t, they say why in a few words and copy the result for you."
+                ),
+                .init(
+                    titleKey: "Settings fits again",
+                    detailKey: "The Settings window keeps its size after the guide, so nothing is cut off at the sides."
+                )
+            ],
+            closingKey: "Your settings and history stay as they were."),
+        .init(
             version: "1.0.2", build: "3", isPreview: false,
             titleKey: "What’s new",
             leadKey: "Replace works in many more apps, and setting up no longer asks for an API key.",

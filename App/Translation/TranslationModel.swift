@@ -2310,6 +2310,9 @@ final class Model: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAu
                     self.translationRecoveryAction = .accessibility
                 case .uncertain:
                     recoveryNotice = L10n.tr("Check the original app before inserting again.")
+                case .secureInput, .protectedField:
+                    // The same reason every Replace gives; the translation stays to copy.
+                    recoveryNotice = ReplacementNotice.afterAttempt(issue)
                 default:
                     recoveryNotice = L10n.tr(
                         "Couldn’t replace the selection. The translation is still available to copy.")

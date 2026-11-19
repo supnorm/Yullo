@@ -116,7 +116,7 @@ Oder im Terminal:
 curl -fsSL https://yullo.me/install.sh | sh
 ```
 
-Das Skript lädt die neueste Version, prüft sie gegen ihre veröffentlichte SHA-256 und legt Yullo in „Programme“. [Lies es](https://github.com/supnorm/yullo.me/blob/main/install.sh) vorher, wenn du magst.
+Das Skript lädt die neueste Version, prüft sie gegen ihre veröffentlichte SHA-256 und legt Yullo in „Programme“. [Lies es](install.sh) vorher, wenn du magst.
 
 Lieber ein Disk-Image? Lade `Yullo.dmg` aus der [neuesten Version](https://github.com/supnorm/Yullo/releases/latest) und zieh Yullo in „Programme“. Beim ersten Öffnen bittet dich macOS um Bestätigung: Systemeinstellungen › Datenschutz & Sicherheit › Dennoch öffnen.
 
@@ -128,13 +128,13 @@ Lieber ein Disk-Image? Lade `Yullo.dmg` aus der [neuesten Version](https://githu
 
 ## Aus dem Quellcode bauen
 
-Du brauchst Xcode 26 (mit `xcode-select` ausgewählt), `git`, `cmake` und `python3`.
+Du brauchst einen Mac mit Apple-Chip und macOS 26, [Xcode 26](https://apps.apple.com/app/xcode/id497799835) und `cmake` (etwa `brew install cmake`).
 
 ```sh
-git clone https://github.com/supnorm/Yullo.git
-cd Yullo
+git clone https://github.com/supnorm/Yullo.git ~/Yullo
+cd ~/Yullo
 
-# Nur beim ersten Mal: eine lokale Signaturidentität erstellen
+# Nur beim ersten Mal: ein lokales Signaturzertifikat in deinem Schlüsselbund erstellen
 # (oder dein eigenes Zertifikat nutzen: --identity <40-stelliger SHA-1>)
 python3 scripts/setup-signing.py --create
 
@@ -145,7 +145,11 @@ bash build.sh
 python3 scripts/install-update.py --destination /Applications/Yullo.app
 ```
 
-Der erste Build holt und prüft die fest versionierten Quellen der enthaltenen Laufzeiten, braucht also eine Verbindung und etwas Zeit. Leg den Ordner in einen kurzen Pfad, etwa `~/Yullo`, denn die Sprachlaufzeit begrenzt die Pfadlänge. Ein Build lädt nie Modelle.
+`bash build.sh` prüft zuerst diesen Mac und nennt jedes Problem mit dem Befehl, der es behebt, etwa eine fehlende Xcode-Lizenz, Metal-Toolchain oder `cmake`. Nur die Prüfung: `python3 scripts/doctor.py`.
+
+Der erste Build holt und prüft die fest versionierten Quellen der enthaltenen Laufzeiten, braucht also eine Verbindung, etwa 5 GB freien Speicher und etwas Zeit. Leg den Ordner in einen kurzen Pfad, etwa `~/Yullo`, denn die Sprachlaufzeit begrenzt die Pfadlänge. Ein Build lädt nie Modelle.
+
+Hast du Yullo schon von yullo.me installiert, sagt dir der letzte Schritt, was sich ändert, bevor er diese Kopie ersetzt: macOS fragt erneut nach Yullos Berechtigungen, und die Updateprüfung in Yullo bietet weiter die veröffentlichte Version an. Zurück zur veröffentlichten Version kommst du mit dem Installationsbefehl oben.
 
 <details>
 <summary><b>Das Repository im Überblick</b></summary>

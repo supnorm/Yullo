@@ -17,7 +17,7 @@ fi
 if ! git -C "$SOURCE" rev-parse --verify HEAD >/dev/null 2>&1; then
     # A first run interrupted before checkout left no remote or no HEAD; set both again.
     git -C "$SOURCE" remote add origin https://github.com/0xShug0/audio.cpp.git 2>/dev/null || git -C "$SOURCE" remote set-url origin https://github.com/0xShug0/audio.cpp.git
-    git -C "$SOURCE" fetch --depth 1 origin "$SPEECH_REVISION"
+    git -C "$SOURCE" fetch --depth 1 origin "$SPEECH_REVISION" || { echo "Couldn't download audio.cpp from github.com. Check your internet connection, then run bash build.sh again." >&2; exit 1; }
     git -C "$SOURCE" checkout --detach FETCH_HEAD
 fi
 if [ "$(git -C "$SOURCE" rev-parse HEAD)" != "$SPEECH_REVISION" ] ||
